@@ -8,7 +8,8 @@ import {
   themeLight,
 } from "dockview-react";
 import { createContext, useContext } from "react";
-import { type CellChange, SheetGrid } from "./SheetGrid";
+import type { WorkbookResults } from "./recalc";
+import { type CellEdit, SheetGrid } from "./SheetGrid";
 
 /**
  * The tabbed, tileable sheet area. Each open sheet is a dockview panel: sheets open as tabs, and a
@@ -17,7 +18,11 @@ import { type CellChange, SheetGrid } from "./SheetGrid";
 
 export interface SheetAreaContextValue {
   workbook: Workbook;
-  onCellsChange: (sheetId: string, changes: CellChange[]) => void;
+  results: WorkbookResults;
+  onSelect: (sheetId: string, address: string) => void;
+  /** Commits edits to a sheet; returns an error message if an edit was rejected. */
+  onCommit: (sheetId: string, edits: CellEdit[]) => string | null;
+  onCommitError: (message: string) => void;
 }
 
 /** Dockview panels are created by dockview, so they read the live workbook from context. */
@@ -34,7 +39,10 @@ function SheetPanel({ params }: IDockviewPanelProps<SheetPanelParams>) {
   return (
     <SheetGrid
       sheet={sheet}
-      onCellsChange={(changes) => context.onCellsChange(sheet.id, changes)}
+      results={context.results.get(sheet.id)}
+      onSelect={(address) => context.onSelect(sheet.id, address)}
+      onCommit={(edits) => context.onCommit(sheet.id, edits)}
+      onCommitError={context.onCommitError}
     />
   );
 }

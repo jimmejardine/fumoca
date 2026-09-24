@@ -1,5 +1,6 @@
 import type { BinaryFn, DistKind, Program, UnaryFn } from "./ir";
 import { standardNormal, uniformUnit } from "./random";
+import { normalCdf, normalPdf } from "./special";
 
 export interface RunOptions {
   /** 32-bit seed. */
@@ -32,6 +33,10 @@ function unary(fn: UnaryFn, a: number): number {
       return Math.log(a);
     case "abs":
       return Math.abs(a);
+    case "normcdf":
+      return normalCdf(a);
+    case "normpdf":
+      return normalPdf(a);
   }
 }
 

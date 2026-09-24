@@ -97,6 +97,7 @@ describe("CPU and GPU backends", () => {
       B4: "=IF(A5 < 0.3, B1, B2 * 10)",
       B5: "=-A4^2 + 50%",
       B6: "=(A1 > 100) + (A4 <= 2) * 2 + (A5 = A5) * 4",
+      B7: "=NORM.S.DIST((A1 - 100) / 10, TRUE) + NORM.S.DIST(A3 - 1, FALSE) + NORMSDIST(-A4)",
     };
     const outputs = Object.keys(model);
     const tolerance = 1e-4;

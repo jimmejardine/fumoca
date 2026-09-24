@@ -26,6 +26,10 @@ function unary(fn: UnaryFn, a: string): string {
       return `log(${a})`;
     case "abs":
       return `abs(${a})`;
+    case "normcdf":
+      return `fm_normcdf(${a})`;
+    case "normpdf":
+      return `fm_normpdf(${a})`;
   }
 }
 

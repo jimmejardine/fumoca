@@ -175,6 +175,10 @@ class Parser {
       case "ref":
         return { type: "ref", address: token.address };
       case "name": {
+        // TRUE and FALSE are Excel's boolean literals; as numbers they are 1 and 0.
+        if (this.peekOp() !== "(" && (token.name === "TRUE" || token.name === "FALSE")) {
+          return { type: "number", value: token.name === "TRUE" ? 1 : 0 };
+        }
         this.expectOp("(");
         const args: Expr[] = [];
         if (this.peekOp() !== ")") {

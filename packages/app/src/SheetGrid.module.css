@@ -1,0 +1,47 @@
+.wrapper {
+  height: 100%;
+}
+
+/* Cell styles by result kind (SPECS.md §6.5). */
+.number {
+  text-align: right;
+}
+
+.uncertain {
+  text-align: center;
+}
+
+.text {
+  text-align: left;
+}
+
+.error {
+  text-align: center;
+  color: var(--mantine-color-red-6);
+}
+
+/* Root cells: values and distributions the user entered directly. */
+.root {
+  font-weight: 700;
+}
+
+.editor {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0 6px;
+  border: 2px solid var(--mantine-primary-color-filled);
+  outline: none;
+  font: inherit;
+  color: inherit;
+  background: var(--mantine-color-body);
+}
+
+/*
+ * Row numbers while a filter hides rows, as in Excel. RevoGrid's theme forces row-header text
+ * colour with a highly specific selector, so this one class needs !important to win.
+ */
+.filteredRowHeader {
+  /* biome-ignore lint/complexity/noImportantStyles: must override RevoGrid's theme selector */
+  color: var(--mantine-color-blue-6) !important;
+}

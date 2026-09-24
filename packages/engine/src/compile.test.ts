@@ -37,6 +37,12 @@ describe("formula evaluation", () => {
     ["=IF(0, 10)", 0],
     ["=(1=1)+(1<>1)+(2>=2)+(3<=2)", 2],
     ["=sqrt(9)", 3], // function names are case-insensitive
+    ["=NORM.S.DIST(0, TRUE)", 0.5],
+    ["=NORM.S.DIST(1.96, TRUE)", 0.9750021048517795],
+    ["=NORM.S.DIST(0, FALSE)", 0.3989422804014327],
+    ["=NORMSDIST(-1)", 0.15865525393145707],
+    ["=TRUE + FALSE + true", 2],
+    ["=IF(FALSE, 1, 2)", 2],
   ])("%s = %d", (formula, expected) => {
     expect(value(formula)).toBeCloseTo(expected, 12);
   });
@@ -55,7 +61,7 @@ describe("formula evaluation", () => {
 
   it("allows text labels but not references to them", () => {
     expect(evaluate({ A1: "Spot price", B1: 100, B2: "=B1*2" }, "B2")).toBe(200);
-    expect(() => compile({ A1: "Spot price", B1: "=A1*2" })).toThrow(/refers to text in A1/);
+    expect(() => compile({ A1: "Spot price", B1: "=A1*2" })).toThrow(/B1: Refers to text in A1/);
   });
 
   it("reports circular references", () => {

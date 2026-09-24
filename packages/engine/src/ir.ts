@@ -8,7 +8,8 @@
 
 export type Reg = number;
 
-export type UnaryFn = "neg" | "sqrt" | "exp" | "ln" | "abs";
+/** `normcdf` and `normpdf` are the standard normal CDF Φ and density φ. */
+export type UnaryFn = "neg" | "sqrt" | "exp" | "ln" | "abs" | "normcdf" | "normpdf";
 
 export type BinaryFn =
   | "add"

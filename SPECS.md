@@ -47,7 +47,17 @@ This document holds the detailed specifications for fumoca. For a high-level ove
   - through a guided distribution picker (§6.2)
   - inside a larger formula, for example `=A1 * UNIFORM(0.9, 1.1)`, which makes the result uncertain too
 - Any cell whose value depends on a distribution is itself uncertain. The engine builds up that cell's simulated distribution automatically (§6).
-- Cells show their evaluated value. The formula shows when the cell is selected or being edited.
+- Cells show their evaluated value, the **answer**, never the formula (§6.5).
+- **Formula bar** (below the toolbar):
+  - Shows the selected cell's address and its raw contents (the formula or value), and lets you edit them.
+  - **Enter** or **Tab** commits the edit and recalculates, then moves the selection down one row, as in Excel.
+  - **Escape** reverts the edit.
+  - Leaving the bar with changes also commits them.
+- **In-grid editing:**
+  - **F2**, double-click or typing opens an editor in the cell itself.
+  - F2 and double-click show the cell's raw formula or value; typing starts a new entry.
+  - Enter commits and Escape cancels.
+- **Syntax errors are rejected:** a formula with a syntax error isn't committed, as in Excel. The formula bar shows the error, or a notification appears for in-grid edits, and the cell keeps its previous contents.
 - Standard spreadsheet behaviour is expected:
   - Select cells, move with the keyboard, edit in place and in a formula bar
   - Copy and paste, with relative and absolute (`$A$1`) references adjusted
@@ -438,6 +448,19 @@ This gives each variable any distribution it needs, while keeping the dependence
 ### 6.5 Results
 
 Every uncertain cell shows live results.
+
+**Every cell (implemented):**
+- **Root cells are bold.** A root cell's contents refer to no other cell: a number, or a formula or distribution built only from constants, such as `100`, `=1+2` or `=NORMAL(100, 10)`.
+  - Formula results, such as `=B1*2` or `=NORMAL(B1, 10)`, are normal weight.
+  - So are text labels.
+- **Deterministic numbers:** Excel "General" style (up to 10 significant digits, no thousands separators), right-aligned.
+- **Uncertain cells:** `mean ± SD`, centred. The SD is shown to 2 significant digits, with the mean rounded to the same decimal place, for example `100 ± 10` or `1.000 ± 0.058`.
+- **Text labels:** left-aligned.
+- **Errors:** the error code in red (`#NAME?`, `#VALUE!`, `#CIRC!`, `#ERROR!`, `#NUM!`, `#DIV/0!`), with the reason in a tooltip. A cell that depends on an error cell shows the same code.
+- **Recalculation:** the whole model is recalculated after every commit, and after New, Load or loading the test model.
+  - It uses a fixed seed and a fixed batch: 100,000 samples on the GPU, or 10,000 on the CPU when WebGPU isn't available.
+  - The status appears at the right of the formula bar.
+  - Continuous sampling with settling (§6.3) replaces this later.
 
 **In the grid cell:** an uncertain cell must read clearly at a glance, while the grid still looks like a spreadsheet.
 
