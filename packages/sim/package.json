@@ -13,5 +13,9 @@
   },
   "dependencies": {
     "@fumoca/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitest/browser-playwright": "5.0.1",
+    "playwright": "1.63.0"
   }
 }

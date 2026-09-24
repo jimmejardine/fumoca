@@ -15,6 +15,9 @@
     "@fumoca/engine": "workspace:*"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.74"
+    "@fumoca/sim": "workspace:*",
+    "@vitest/browser-playwright": "5.0.1",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.63.0"
   }
 }

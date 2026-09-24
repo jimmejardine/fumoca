@@ -14,7 +14,8 @@ dist-ssr/
 .eslintcache
 coverage/
 
-# Playwright
+# Playwright / Vitest browser mode
+__screenshots__/
 test-results/
 playwright-report/
 blob-report/

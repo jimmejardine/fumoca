@@ -336,7 +336,9 @@ Notes:
   3. Record the resulting value of every uncertain cell.
 - Each loop is one **iteration**. Over many iterations, every dependent cell builds up its own **output distribution** (a simulated distribution of possible values), which the grid shows live.
 - Every cell that depends on a distribution is effectively an output. The user doesn't have to mark outputs in advance.
-- Cells that don't depend on any distribution are **deterministic**. They are calculated once, as in a normal spreadsheet, and aren't re-evaluated each iteration.
+- Cells that don't depend on any distribution are **deterministic**.
+  - In the grid they look like normal spreadsheet values, with no histogram (§6.5).
+  - The simulation backends still evaluate them in every iteration, as part of the whole model (§6.6).
 
 ### 6.2 Distribution functions (initial)
 
@@ -488,9 +490,20 @@ This is a **priority**. A **GPU prototype** should be built early, before the CP
    - Each cell becomes a local variable in the shader.
    - Formulas become WGSL expressions.
    - Distribution functions become calls to sampler functions written in WGSL.
-2. **Deterministic cells become constants:** cells that don't depend on any distribution are calculated on the CPU and passed to the shader as uniforms or constants. They are not recomputed on the GPU.
+2. **The whole model runs on the GPU, deterministic cells included.**
+   - Cells that don't depend on any distribution are evaluated in the kernel in every iteration, just like uncertain cells. They are *not* precomputed on the CPU and passed in as constants.
+   - This keeps the two backends structurally identical: the CPU evaluator and the GPU kernel run exactly the same IR. So:
+     - every cell can be cross-checked (§6.7);
+     - a divergence always points at the backend itself, never at a split between CPU-computed and GPU-computed parts;
+     - performance comparisons between the backends are like for like.
+   - The cost is negligible, because spreadsheet models are expected to stay far smaller than what a GPU can handle.
 3. **Random numbers:**
-   - Uses a **counter-based random number generator** such as Philox or PCG, keyed by (seed, iteration index, cell id).
+   - Uses a **counter-based random number generator**, keyed by (seed, iteration index, stream, k).
+     - The stream is the distribution call site, so two distributions in one cell draw independently.
+     - k picks one of several draws for a single sample, for example the two uniforms Box–Muller needs.
+   - **Implemented:** a chain of 32-bit `lowbias32` integer hashes (`packages/engine/src/random.ts`, mirrored in `packages/gpu/src/prelude.ts`).
+     - It uses only 32-bit integer operations, so TypeScript (`Math.imul`) and WGSL produce identical bits.
+     - Uniforms keep 23 bits, so they are exactly representable in `f32`, which makes CPU and GPU uniform draws bit-identical.
    - This needs no shared state between threads.
    - Results are reproducible whatever the number of threads or the order they run in.
 4. **Distribution samplers written in WGSL:**
