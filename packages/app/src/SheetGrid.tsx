@@ -29,6 +29,27 @@ interface CellMeta {
   kind: CellResult["kind"];
   root: boolean;
   message?: string;
+  /** CSS background image: the cell's histogram, for uncertain cells. */
+  background?: string;
+}
+
+/** Histogram fill colours: faint, so the text on top stays readable in both themes. */
+const HISTOGRAM_COLORS = { light: "rgba(34, 139, 230, 0.18)", dark: "rgba(77, 171, 247, 0.22)" };
+
+/**
+ * An uncertain cell's histogram as an inline SVG data URI, stretched to fill the cell as its
+ * background (SPECS.md §6.5). Each bin is a bar whose height is its normalized count.
+ */
+export function histogramBackground(bins: readonly number[], color: string): string {
+  const bars = bins
+    .map((height, i) =>
+      height > 0 ? `M${i},100V${(100 - height * 100).toFixed(1)}H${i + 1}V100Z` : "",
+    )
+    .join("");
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bins.length} 100" ` +
+    `preserveAspectRatio="none"><path d="${bars}" fill="${color}"/></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
 
 type Row = Record<string, unknown> & { [ROW_KEY]: number };
@@ -51,9 +72,19 @@ function cellProperties({ model, prop }: CellTemplateProp) {
   const meta = model[metaKey(String(prop))] as CellMeta | undefined;
   if (!meta) return;
   const names = [classes[meta.kind], meta.root ? classes.root : undefined].filter(Boolean);
-  return meta.message
-    ? { class: names.join(" "), title: meta.message }
-    : { class: names.join(" ") };
+  return {
+    class: names.join(" "),
+    ...(meta.message ? { title: meta.message } : {}),
+    ...(meta.background
+      ? {
+          style: {
+            backgroundImage: meta.background,
+            backgroundSize: "100% 100%",
+            backgroundRepeat: "no-repeat",
+          },
+        }
+      : {}),
+  };
 }
 
 const COLUMNS = COLUMN_LETTERS.map((letter) => ({
@@ -184,6 +215,9 @@ export function SheetGrid({ sheet, results, onSelect, onCommit, onCommitError }:
           kind: result.kind,
           root: result.kind !== "text" && result.root,
           ...(result.kind === "error" ? { message: result.message } : {}),
+          ...(result.kind === "uncertain"
+            ? { background: histogramBackground(result.histogram, HISTOGRAM_COLORS[colorScheme]) }
+            : {}),
         };
         row[metaKey(prop)] = meta;
       } else {
@@ -192,7 +226,7 @@ export function SheetGrid({ sheet, results, onSelect, onCommit, onCommitError }:
       }
     }
     return rows;
-  }, [sheet.cells, results]);
+  }, [sheet.cells, results, colorScheme]);
 
   const commit = (edits: CellEdit[]) => {
     const error = onCommit(edits);

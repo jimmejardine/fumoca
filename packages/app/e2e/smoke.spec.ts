@@ -297,3 +297,17 @@ test("the exact option prices follow the inputs, and Monte Carlo agrees", async 
     expect(Math.abs(await shownMean(page, row, 1))).toBeLessThan(1);
   }
 });
+
+test("uncertain cells show a histogram of their samples in the background", async ({ page }) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  const background = (row: number, col: number) =>
+    cell(page, row, col).evaluate((element) => getComputedStyle(element).backgroundImage);
+  // B7 (terminal price) and B8 (call payoff) are uncertain.
+  expect(await background(6, 1)).toContain("svg");
+  expect(await background(7, 1)).toContain("svg");
+  // B1 (a root number), B14 (deterministic formula) and A1 (a label) have no histogram.
+  expect(await background(0, 1)).toBe("none");
+  expect(await background(13, 1)).toBe("none");
+  expect(await background(0, 0)).toBe("none");
+});

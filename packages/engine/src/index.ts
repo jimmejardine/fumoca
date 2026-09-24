@@ -16,6 +16,7 @@ export {
   type SheetCompilation,
 } from "./compile";
 export { evaluateCpu, outputRegisters, type RunOptions } from "./cpu";
+export { StreamingHistogram } from "./histogram";
 export type { BinaryFn, DistKind, Op, Program, Reg, UnaryFn } from "./ir";
 export { type BinaryOperator, type Expr, FormulaSyntaxError, parseFormula } from "./parser";
 export { hash32, randomU32, standardNormal, toUnit, uniformUnit } from "./random";

@@ -454,6 +454,12 @@ Every uncertain cell shows live results.
   - Formula results, such as `=B1*2` or `=NORMAL(B1, 10)`, are normal weight.
   - So are text labels.
 - **Deterministic numbers:** Excel "General" style (up to 10 significant digits, no thousands separators), right-aligned.
+- **In-cell histogram:** every uncertain cell's background shows a faint histogram of its samples. It's drawn as a stretched inline SVG and follows light/dark mode.
+  - It uses a 64-bin **streaming histogram** (`StreamingHistogram`, `packages/engine/src/histogram.ts`), ready for continuous sampling:
+    - The first batch sets the range: its [min, max], padded by 10%.
+    - A later sample outside the range doubles the range towards that side and merges neighbouring bins in pairs.
+    - Bin edges lie on a grid anchored at zero, so the doubled grids nest exactly and the merged counts are exact. Old samples are never re-read.
+  - Deterministic cells, labels and errors have no histogram.
 - **Uncertain cells:** `mean ± SD`, centred. The SD is shown to 2 significant digits, with the mean rounded to the same decimal place, for example `100 ± 10` or `1.000 ± 0.058`.
 - **Text labels:** left-aligned.
 - **Errors:** the error code in red (`#NAME?`, `#VALUE!`, `#CIRC!`, `#ERROR!`, `#NUM!`, `#DIV/0!`), with the reason in a tooltip. A cell that depends on an error cell shows the same code.

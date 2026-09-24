@@ -2,7 +2,7 @@ import { type Backend, evaluateCpu } from "@fumoca/engine";
 import { createSheet } from "@fumoca/storage";
 import { describe, expect, it } from "vitest";
 import { parseCellInput } from "./cellInput";
-import { formatNumber, formatResult, formatUncertain, recalculate } from "./recalc";
+import { formatNumber, formatResult, formatUncertain, HISTOGRAM_BINS, recalculate } from "./recalc";
 
 /** A synchronous stand-in for the CPU/GPU backends. */
 const fakeBackend: Backend = {
@@ -35,6 +35,21 @@ describe("recalculate", () => {
     expect(a1.mean).toBeCloseTo(100, 0);
     expect(a1.sd).toBeCloseTo(10, 0);
     expect(a2.mean).toBeCloseTo(2 * a1.mean, 10);
+  });
+
+  it("attaches a histogram to uncertain cells only, peaking near the mean", async () => {
+    const results = await calc({ A1: "=NORMAL(100, 10)", A2: 5, A3: "=A2*2" });
+    const a1 = results.get("A1");
+    if (a1?.kind !== "uncertain") throw new Error("not uncertain");
+    expect(a1.histogram).toHaveLength(HISTOGRAM_BINS);
+    expect(Math.max(...a1.histogram)).toBe(1);
+    // A normal distribution: the middle is taller than the edges.
+    const middle = Math.max(...a1.histogram.slice(HISTOGRAM_BINS * 0.375, HISTOGRAM_BINS * 0.625));
+    expect(middle).toBe(1);
+    expect(a1.histogram[0]).toBeLessThan(0.05);
+    expect(a1.histogram[HISTOGRAM_BINS - 1]).toBeLessThan(0.05);
+    expect(results.get("A2")).not.toHaveProperty("histogram");
+    expect(results.get("A3")).not.toHaveProperty("histogram");
   });
 
   it("reports labels, compile errors and non-finite results", async () => {

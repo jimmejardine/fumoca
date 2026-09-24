@@ -1,15 +1,18 @@
-import { type Backend, compileSheet, uncertainCells } from "@fumoca/engine";
+import { type Backend, compileSheet, StreamingHistogram, uncertainCells } from "@fumoca/engine";
 import type { Workbook } from "@fumoca/storage";
 
 /** The calculated result of one cell, as the grid shows it (SPECS.md §6.5). */
 export type CellResult =
   | { kind: "number"; value: number; root: boolean }
-  | { kind: "uncertain"; mean: number; sd: number; root: boolean }
+  | { kind: "uncertain"; mean: number; sd: number; histogram: number[]; root: boolean }
   | { kind: "text"; text: string }
   | { kind: "error"; code: string; message: string; root: boolean };
 
 /** Results per sheet id, then per cell address. */
 export type WorkbookResults = Map<string, Map<string, CellResult>>;
+
+/** Bins in each uncertain cell's histogram (SPECS.md §6.5). */
+export const HISTOGRAM_BINS = 64;
 
 export interface RecalcOptions {
   seed: number;
@@ -35,7 +38,9 @@ function summarize(samples: ArrayLike<number>, uncertain: boolean, root: boolean
   let squares = 0;
   for (let i = 0; i < samples.length; i++) squares += ((samples[i] as number) - mean) ** 2;
   const sd = samples.length > 1 ? Math.sqrt(squares / (samples.length - 1)) : 0;
-  return { kind: "uncertain", mean, sd, root };
+  const histogram = new StreamingHistogram(HISTOGRAM_BINS);
+  histogram.add(samples);
+  return { kind: "uncertain", mean, sd, histogram: histogram.normalized(), root };
 }
 
 /** Recalculates every sheet of a workbook on a backend. */
