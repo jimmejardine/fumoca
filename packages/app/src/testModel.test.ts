@@ -1,6 +1,7 @@
-import { compile, evaluateCpu } from "@fumoca/engine";
+import { type Backend, compile, evaluateCpu } from "@fumoca/engine";
 import { parseWorkbook, serializeWorkbook } from "@fumoca/storage";
 import { describe, expect, it } from "vitest";
+import { recalculate } from "./recalc";
 import { createTestWorkbook } from "./testModel";
 
 describe("test model", () => {
@@ -41,5 +42,31 @@ describe("test model", () => {
     // They follow the inputs: at a spot of 120 the call is worth more.
     const [richerCall] = price({ ...sheet.cells, B1: 120 });
     expect(richerCall).toBeGreaterThan(20);
+  });
+
+  it.each([
+    ["B16", "X", 10, 3],
+    ["B17", "Y", 20, 4],
+    ["B18", "X + Y", 30, 5],
+    ["B19", "X − Y", -10, 5],
+    ["B20", "2X + 3", 23, 6],
+    ["B21", "X + X", 20, 6],
+    ["B22", "X + independent X", 20, 3 * Math.SQRT2],
+  ])("sums of normals: %s (%s) has mean %d and SD %d", async (address, _, mean, sd) => {
+    const backend: Backend = {
+      name: "cpu",
+      run: async (program, options) => evaluateCpu(program, options),
+      dispose: () => {},
+    };
+    const workbook = createTestWorkbook();
+    const sheet = workbook.sheets.find((s) => s.name === "Functions");
+    if (!sheet) throw new Error("No functions sheet");
+    const count = 50_000;
+    const results = await recalculate({ sheets: [sheet] }, backend, { seed: 7, count });
+    const result = results.get(sheet.id)?.get(address);
+    if (result?.kind !== "uncertain") throw new Error(`${address} is not uncertain`);
+    // Mean within 5 standard errors; SD within 2%.
+    expect(Math.abs(result.mean - mean)).toBeLessThan((5 * sd) / Math.sqrt(count));
+    expect(Math.abs(result.sd - sd) / sd).toBeLessThan(0.02);
   });
 });
