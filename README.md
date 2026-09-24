@@ -26,7 +26,8 @@ If you can use a spreadsheet, you can use fumoca. You build a model in a familia
 ## Tech stack
 
 - **TypeScript throughout.** The formula engine, simulation engine and UI are all written in TypeScript.
-- **React** for the UI, with [Glide Data Grid](https://github.com/glideapps/glide-data-grid) for the spreadsheet grid and [Apache ECharts](https://echarts.apache.org/) for charts.
+- **React 19 + [Mantine](https://mantine.dev/)** for the UI, with [RevoGrid](https://rv-grid.com/) for the spreadsheet grid and [Apache ECharts](https://echarts.apache.org/) for charts.
+- **Vite + pnpm workspaces** for building, with **Vitest** and **Playwright** for testing.
 - **Runs in the browser.** Simulations run on the user's machine.
 - **Uses every core.** The simulation engine runs on a pool of Web Workers. By default it uses all CPU cores except one, which is kept free so the UI stays responsive. The number of workers can be changed in settings.
 - **GPU acceleration.** The entire workbook is compiled into a single WebGPU compute kernel, and each GPU thread runs one complete iteration of the model. By default the CPU and GPU engines **run side by side** and are checked against each other continuously. Cells where the two disagree are flagged, which uncovers bugs in either engine. Either engine can be turned off.
@@ -42,7 +43,7 @@ fumoca is free, open-source software. Use it at [fumoca.com](https://fumoca.com)
 
 ## Status
 
-Early development. The repo has only documentation so far.
+Early development. The workspace and tooling are set up. The engine and UI are placeholders so far.
 
 ## Documentation
 
@@ -51,7 +52,34 @@ Early development. The repo has only documentation so far.
 
 ## Getting started
 
-_To be added once the project is set up._
+You need [Node.js](https://nodejs.org/) 24 or later. pnpm is provided through Corepack, which comes with Node.
+
+```sh
+corepack enable        # once per machine; makes the pinned pnpm version available
+pnpm install
+pnpm dev               # start the dev server
+```
+
+| Command | What it does |
+|---|---|
+| `pnpm dev` | Start the Vite dev server |
+| `pnpm build` | Production build of the app (`packages/app/dist`) |
+| `pnpm typecheck` | Type-check every package |
+| `pnpm lint` / `pnpm format` | Check / fix lint and formatting (Biome) |
+| `pnpm test` | Unit tests (Vitest) |
+| `pnpm test:e2e` | Browser tests (Playwright). Run `pnpm --filter @fumoca/app exec playwright install chromium` once first |
+
+The repo is a pnpm workspace:
+
+| Package | Contents |
+|---|---|
+| `packages/engine` | Formula engine. Pure TypeScript, no DOM |
+| `packages/sim` | Worker pool, scheduler, settling |
+| `packages/gpu` | WGSL compiler, WebGPU runtime |
+| `packages/storage` | Storage provider interface and built-in providers |
+| `packages/app` | React + Mantine UI |
+
+See [SPECS.md](SPECS.md) §9.1 for details.
 
 ## Licence
 

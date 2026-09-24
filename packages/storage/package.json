@@ -1,0 +1,17 @@
+{
+  "name": "@fumoca/storage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Storage provider interface and the built-in local-file and IndexedDB providers.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@fumoca/engine": "workspace:*"
+  }
+}

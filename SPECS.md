@@ -456,7 +456,7 @@ Every uncertain cell shows live results.
   - Deterministic cells have no histogram, so uncertain cells stand out immediately.
   - Cells that hold a distribution directly and cells that are *calculated* from one could get a subtle visual difference, such as a corner marker **(proposed)**.
 - **Rendering:**
-  - Grid cells are drawn on a `<canvas>` through the grid library's custom cell renderer (§9).
+  - Histograms are drawn as small inline SVGs through the grid library's custom cell templates (§9).
   - Only visible cells are drawn (virtualised rendering, §10), so hundreds of live histograms stay cheap.
 - **Configurable later:**
   - Choice of summary text: mean ± SD, median, P10–P90, or mean only.
@@ -803,13 +803,19 @@ Built-in providers in the open-source core: **local file** and **browser (Indexe
 ## 9. Technical architecture
 
 - **Language:** TypeScript only, in strict mode.
-- **UI framework:** React.
-- **Grid library: [Glide Data Grid](https://github.com/glideapps/glide-data-grid)** (MIT). It's canvas-based, virtualised, and supports custom cell drawing, which is used for the in-cell histograms. It has no formula engine of its own: fumoca builds its own formula bar and fill-handle logic on top. The requirements it was chosen against:
+- **UI framework:** React 19, with **[Mantine](https://mantine.dev/)** (MIT) as the component library for everything outside the grid: menus, dialogs, forms, panels, tabs and theming (including light/dark).
+- **Grid library: [RevoGrid](https://rv-grid.com/)** (MIT), used through its official React wrapper `@revolist/react-datagrid`.
+  - It's built for spreadsheets: virtualised, with range selection, autofill (fill handle), clipboard support and in-place editing.
+  - It releases frequently and has stable (non-alpha) releases that work with React 19.
+  - Cells are drawn through custom **cell templates**, and the in-cell histogram (§6.5) is a small inline SVG behind the text. Only visible cells are rendered, so this stays cheap.
+  - It has no formula engine of its own: fumoca provides the formula bar and all calculation.
+  - Glide Data Grid was considered first but rejected. Its React 19 support exists only in alpha releases, and there has been no stable release since February 2024.
+  - The requirements it was chosen against:
   - Virtualised rendering, smooth with 10,000+ rows and many columns (§10).
-  - **Custom cell rendering**, so a faint live histogram can be drawn behind each uncertain cell (§6.5). Canvas-based rendering is strongly preferred.
+  - **Custom cell rendering**, so a faint live histogram can be drawn behind each uncertain cell (§6.5).
   - Spreadsheet-style interaction: cell selection and ranges, keyboard navigation, in-place editing, copy/paste, fill handle.
   - Doesn't need a formula engine of its own. fumoca's engine owns all calculation, and the grid only displays and edits.
-  - A permissive licence (MIT/Apache) and active maintenance.
+  - A permissive licence (MIT/Apache), active maintenance, and stable releases that work with React 19.
 - **Charting library: [Apache ECharts](https://echarts.apache.org/)** (Apache-2.0), used through a React wrapper. It's canvas-based, handles live updates well, has built-in themes, and covers every chart type needed. The requirements it was chosen against:
   - Histogram, cumulative distribution (S-curve), box plot, tornado, spider/line, and heat map charts (§6.5, §7.4, §7.5).
   - Fast, frequent updates while samples build up live.
@@ -831,6 +837,46 @@ Built-in providers in the open-source core: **local file** and **browser (Indexe
   - `ui/`: React components for the grid, formula bar, worksheet tabs, charts, scenario editor and results views
 - The engine has no dependency on the UI, so it can be unit-tested on its own.
 - **Shared IR:** both the CPU evaluator and the GPU compiler work from the same compiled intermediate representation (IR) of the model: a flat, topologically ordered list of typed operations. Simulation backends are interchangeable behind a common interface.
+
+### 9.1 Build process and tooling
+
+| Area | Tool |
+|---|---|
+| Package manager | **pnpm**, with workspaces. The version is pinned through `packageManager` in `package.json`, via Corepack |
+| Runtime | **Node.js** LTS, pinned in `.nvmrc` |
+| Bundler / dev server | **Vite**, with `@vitejs/plugin-react` |
+| Type checking | **TypeScript** (strict), run as `tsc --noEmit` per package. Vite strips types without checking them |
+| Unit tests | **Vitest**, configured once at the root with a project for each package |
+| Property-based tests | **fast-check**, for the parser and date/granularity arithmetic |
+| Browser / GPU tests | **Playwright** (Chromium with WebGPU), for the GPU kernels, the CPU/GPU cross-check (§6.7) and end-to-end UI tests |
+| Lint + format | **Biome** |
+| CI | **GitHub Actions**: typecheck → lint → unit tests → build → browser tests |
+| Hosting | Static files. No special headers are needed, because `SharedArrayBuffer` isn't used (§6.4) |
+
+**Workspace layout:**
+
+```
+packages/
+  engine/   pure TS: parser, graph, evaluator, functions, random, timeseries. No DOM, no React
+  sim/      worker pool, scheduler, settling
+  gpu/      WGSL compiler and WebGPU runtime
+  storage/  storage provider interface; local-file and IndexedDB providers
+  app/      React + Mantine UI (RevoGrid, ECharts); createApp({ providers })
+```
+
+- **Enforced boundaries:**
+  - `engine` is compiled with no DOM type library, so any accidental use of browser APIs fails type checking.
+  - Dependencies only point downwards: `app` → `sim` / `gpu` / `storage` → `engine`.
+- **Source packages:** workspace packages export their TypeScript source directly. Vite and Vitest compile it, so there is no per-package build step.
+- **Build-time providers (§8.3):**
+  - The open-source `app` build passes only the built-in storage providers to `createApp`.
+  - The fumoca.com build lives in a separate private repo. It depends on these packages and passes in the closed-source cloud provider.
+- **Web Workers** are created with `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })`, which Vite bundles natively.
+- **WGSL shaders** are imported as text with Vite's `?raw` suffix.
+- **Test strategy:**
+  - Excel conformance fixtures: formula → expected result, checked against real Excel output.
+  - Statistical tests of the distribution samplers, with fixed seeds.
+  - Tests that the random number generator gives bit-identical output in TypeScript and WGSL (§6.7).
 
 ---
 

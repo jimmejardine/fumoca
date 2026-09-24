@@ -1,0 +1,17 @@
+{
+  "name": "@fumoca/sim",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Worker pool, combination scheduler and settling for continuous Monte Carlo sampling.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@fumoca/engine": "workspace:*"
+  }
+}

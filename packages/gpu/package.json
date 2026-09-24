@@ -1,0 +1,20 @@
+{
+  "name": "@fumoca/gpu",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Compiles the model IR to WGSL and runs it on WebGPU.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@fumoca/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74"
+  }
+}

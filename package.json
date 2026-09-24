@@ -1,0 +1,29 @@
+{
+  "name": "fumoca",
+  "private": true,
+  "description": "Full Monte Carlo: spreadsheet-style Monte Carlo simulation in the browser",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @fumoca/app dev",
+    "build": "pnpm --filter @fumoca/app build",
+    "preview": "pnpm --filter @fumoca/app preview",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm --filter @fumoca/app test:e2e"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "^26.6.2",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

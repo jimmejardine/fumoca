@@ -1,0 +1,14 @@
+{
+  "name": "@fumoca/engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Formula parser, dependency graph, evaluator, function library, random numbers and time series. Pure TypeScript with no DOM.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  }
+}
