@@ -53,6 +53,11 @@ describe("formula evaluation", () => {
     expect(evaluate({ A1: "=Z99+1" }, "A1")).toBe(1);
   });
 
+  it("allows text labels but not references to them", () => {
+    expect(evaluate({ A1: "Spot price", B1: 100, B2: "=B1*2" }, "B2")).toBe(200);
+    expect(() => compile({ A1: "Spot price", B1: "=A1*2" })).toThrow(/refers to text in A1/);
+  });
+
   it("reports circular references", () => {
     expect(() => compile({ A1: "=B1", B1: "=C1", C1: "=A1" })).toThrow(/Circular reference/);
   });

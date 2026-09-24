@@ -1,5 +1,9 @@
 import "@mantine/core/styles.css";
+import "@mantine/notifications/styles.css";
+import "dockview-react/dist/styles/dockview.css";
 import { MantineProvider } from "@mantine/core";
+import { ModalsProvider } from "@mantine/modals";
+import { Notifications } from "@mantine/notifications";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
@@ -17,7 +21,10 @@ export function createApp(container: HTMLElement, _options: AppOptions): void {
   createRoot(container).render(
     <StrictMode>
       <MantineProvider defaultColorScheme="auto">
-        <App />
+        <ModalsProvider>
+          <Notifications />
+          <App />
+        </ModalsProvider>
       </MantineProvider>
     </StrictMode>,
   );

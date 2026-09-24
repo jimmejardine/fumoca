@@ -1,0 +1,34 @@
+import type { Sheet } from "@fumoca/storage";
+import { NavLink, ScrollArea, Text } from "@mantine/core";
+import { IconTable } from "@tabler/icons-react";
+
+export interface SheetListProps {
+  sheets: Sheet[];
+  activeSheetId: string | null;
+  onOpen: (sheetId: string) => void;
+}
+
+/** The model's sheets. Clicking one opens it as a tab, or brings its tab to the front. */
+export function SheetList({ sheets, activeSheetId, onOpen }: SheetListProps) {
+  return (
+    <>
+      <Text size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" pt="sm" pb={4}>
+        Sheets
+      </Text>
+      <ScrollArea>
+        <nav aria-label="Sheets">
+          {sheets.map((sheet) => (
+            <NavLink
+              key={sheet.id}
+              component="button"
+              label={sheet.name}
+              leftSection={<IconTable size={16} />}
+              active={sheet.id === activeSheetId}
+              onClick={() => onOpen(sheet.id)}
+            />
+          ))}
+        </nav>
+      </ScrollArea>
+    </>
+  );
+}

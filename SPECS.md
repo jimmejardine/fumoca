@@ -829,6 +829,10 @@ Built-in providers in the open-source core: **local file** and **browser (Indexe
   - Spreadsheet-style interaction: cell selection and ranges, keyboard navigation, in-place editing, copy/paste, fill handle.
   - Doesn't need a formula engine of its own. fumoca's engine owns all calculation, and the grid only displays and edits.
   - A permissive licence (MIT/Apache), active maintenance, and stable releases that work with React 19.
+- **Tabs and tiling: [dockview](https://dockview.dev/)** (`dockview-react`, MIT).
+  - Worksheets open as tabs. Dragging a tab to the edge of another pane tiles the sheets side by side, with resizable splits.
+  - Only one model is open at a time. Its sheets can be opened as tabs, closed, and reopened from the Sheets list.
+  - Mantine has no docking or split-pane component, which is why a separate library is used.
 - **Charting library: [Apache ECharts](https://echarts.apache.org/)** (Apache-2.0), used through a React wrapper. It's canvas-based, handles live updates well, has built-in themes, and covers every chart type needed. The requirements it was chosen against:
   - Histogram, cumulative distribution (S-curve), box plot, tornado, spider/line, and heat map charts (§6.5, §7.4, §7.5).
   - Fast, frequent updates while samples build up live.

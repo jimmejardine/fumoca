@@ -41,7 +41,11 @@ function normalizeAddress(address: string): string {
   return address.replaceAll("$", "").toUpperCase();
 }
 
-function parseCell(address: string, input: number | string): Expr {
+/**
+ * Parses a cell's contents. Returns null for a text label: labels may sit in a sheet, but text
+ * values aren't supported in calculations yet.
+ */
+function parseCell(address: string, input: number | string): Expr | null {
   if (typeof input === "number") return { type: "number", value: input };
   if (input.startsWith("=")) {
     try {
@@ -51,9 +55,7 @@ function parseCell(address: string, input: number | string): Expr {
     }
   }
   const value = Number(input);
-  if (input.trim() === "" || Number.isNaN(value)) {
-    throw new CompileError(`${address}: text values are not supported yet`);
-  }
+  if (input.trim() === "" || Number.isNaN(value)) return null;
   return { type: "number", value };
 }
 
@@ -108,9 +110,12 @@ function topologicalOrder(deps: Map<string, Set<string>>): string[] {
 /** Compiles a single-worksheet model into the IR. */
 export function compile(inputs: CellInputs): Program {
   const exprs = new Map<string, Expr>();
+  const labels = new Set<string>();
   for (const [rawAddress, input] of Object.entries(inputs)) {
     const address = normalizeAddress(rawAddress);
-    exprs.set(address, parseCell(address, input));
+    const expr = parseCell(address, input);
+    if (expr) exprs.set(address, expr);
+    else labels.add(address);
   }
 
   const deps = new Map<string, Set<string>>();
@@ -128,6 +133,11 @@ export function compile(inputs: CellInputs): Program {
       case "number":
         return emit({ kind: "const", value: expr.value });
       case "ref": {
+        if (labels.has(expr.address)) {
+          throw new CompileError(
+            `${address}: refers to text in ${expr.address}; text values are not supported yet`,
+          );
+        }
         const reg = cells.get(expr.address);
         if (reg !== undefined) return reg;
         // Empty cells read as 0, as in Excel.
