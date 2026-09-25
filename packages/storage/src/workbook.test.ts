@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  addSeriesColumn,
+  addSheet,
+  columnNameError,
+  createSeriesSheet,
   createSheet,
   createWorkbook,
+  nextSheetName,
   parseWorkbook,
+  renameSeriesColumn,
   serializeWorkbook,
   setCell,
+  setSeriesSettings,
   WorkbookFormatError,
 } from "./workbook";
 
@@ -43,6 +50,82 @@ describe("workbook files", () => {
   ])("rejects %s", (text, message) => {
     expect(() => parseWorkbook(text)).toThrow(WorkbookFormatError);
     expect(() => parseWorkbook(text)).toThrow(message);
+  });
+});
+
+describe("adding sheets", () => {
+  it("names new sheets with the first free SheetN name", () => {
+    const workbook = { sheets: [createSheet("Sheet1"), createSheet("Sheet3")] };
+    expect(nextSheetName(workbook)).toBe("Sheet2");
+    const { workbook: next, sheet } = addSheet(workbook);
+    expect(sheet.name).toBe("Sheet2");
+    expect(next.sheets.map((s) => s.name)).toEqual(["Sheet1", "Sheet3", "Sheet2"]);
+    expect(workbook.sheets).toHaveLength(2);
+  });
+});
+
+describe("series sheets", () => {
+  it("start monthly, level, one Value column, 24 periods from the current month", () => {
+    const sheet = createSeriesSheet("Series1", new Date(2026, 10, 5));
+    expect(sheet.series).toEqual({ granularity: "month", type: "level", columns: ["Value"] });
+    expect(sheet.cells.A1).toBe("2026-11");
+    expect(sheet.cells.A2).toBe("2026-12");
+    expect(sheet.cells.A24).toBe("2028-10");
+    expect(sheet.cells.A25).toBeUndefined();
+  });
+
+  it("round-trip their settings and columns through a file", () => {
+    const series = createSeriesSheet("Series1");
+    const { workbook } = addSheet({ sheets: [createSheet("Sheet1")] }, series);
+    const changed = setSeriesSettings(workbook, series.id, {
+      granularity: "quarter",
+      type: "flow",
+      columns: ["Open", "Close"],
+    });
+    const loaded = parseWorkbook(serializeWorkbook(changed));
+    expect(loaded.sheets.map((s) => s.series)).toEqual([
+      undefined,
+      { granularity: "quarter", type: "flow", columns: ["Open", "Close"] },
+    ]);
+  });
+
+  it("add value columns with the next free ValueN name, and rename them", () => {
+    const series = createSeriesSheet("S");
+    let { workbook } = addSheet({ sheets: [] }, series);
+    workbook = addSeriesColumn(workbook, series.id);
+    workbook = addSeriesColumn(workbook, series.id);
+    expect(workbook.sheets[0]?.series?.columns).toEqual(["Value", "Value2", "Value3"]);
+    workbook = renameSeriesColumn(workbook, series.id, 1, "  Close ");
+    expect(workbook.sheets[0]?.series?.columns).toEqual(["Value", "Close", "Value3"]);
+  });
+
+  it("validate column names", () => {
+    const settings = {
+      granularity: "month" as const,
+      type: "level" as const,
+      columns: ["Open", "Close"],
+    };
+    expect(columnNameError(settings, "High")).toBeNull();
+    expect(columnNameError(settings, " ")).toBe("A column needs a name");
+    expect(columnNameError(settings, "close")).toMatch(/already a column called Close/);
+    expect(columnNameError(settings, "Close", 1)).toBeNull(); // renaming a column to itself
+    expect(columnNameError(settings, "period")).toMatch(/reserved/);
+    expect(columnNameError(settings, "a[b]")).toMatch(/can't contain/);
+  });
+
+  it("reject invalid series settings in a file", () => {
+    const file = (series: unknown) =>
+      JSON.stringify({ format: "fumoca", version: 1, sheets: [{ name: "S", cells: {}, series }] });
+    expect(() => parseWorkbook(file({ granularity: "fortnight", type: "level" }))).toThrow(
+      /invalid series settings/,
+    );
+    expect(() =>
+      parseWorkbook(file({ granularity: "month", type: "level", columns: ["A", "a"] })),
+    ).toThrow(/invalid column name/);
+    // Files without columns get a single Value column.
+    expect(
+      parseWorkbook(file({ granularity: "month", type: "level" })).sheets[0]?.series?.columns,
+    ).toEqual(["Value"]);
   });
 });
 

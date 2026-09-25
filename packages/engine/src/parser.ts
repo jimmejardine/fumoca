@@ -4,6 +4,10 @@
  * Operator precedence follows Excel (SPECS.md §4.4), from lowest to highest:
  *   comparison (= <> < > <= >=)  <  + -  <  * /  <  ^  <  postfix %  <  unary - +
  * Unary minus binds tighter than ^, so -2^2 = 4, and ^ is left-associative, so 2^3^2 = 64.
+ *
+ * Series lookups use structured references (SPECS.md §5.3): `Prices[Close]@2026-10`, or
+ * `Prices@2026-10` for the sheet's first value column. The time after `@` is a period literal or
+ * a cell reference. Sheet names with spaces are quoted: `'Interest Rates'[Rate]@2027`.
  */
 
 export type BinaryOperator = "+" | "-" | "*" | "/" | "^" | "=" | "<>" | "<" | ">" | "<=" | ">=";
@@ -13,7 +17,11 @@ export type Expr =
   | { type: "ref"; address: string }
   | { type: "negate"; operand: Expr }
   | { type: "binary"; operator: BinaryOperator; left: Expr; right: Expr }
-  | { type: "call"; name: string; args: Expr[] };
+  | { type: "call"; name: string; args: Expr[] }
+  | { type: "lookup"; sheet: string; column?: string; when: LookupTime };
+
+/** The time in a series lookup: a period literal (`2026-10`) or a cell holding one. */
+export type LookupTime = { kind: "period"; text: string } | { kind: "ref"; address: string };
 
 export class FormulaSyntaxError extends Error {
   override name = "FormulaSyntaxError";
@@ -21,8 +29,12 @@ export class FormulaSyntaxError extends Error {
 
 type Token =
   | { kind: "number"; value: number }
-  | { kind: "ref"; address: string }
-  | { kind: "name"; name: string }
+  | { kind: "ref"; address: string; text: string }
+  | { kind: "name"; name: string; text: string }
+  | { kind: "sheet"; name: string }
+  | { kind: "column"; name: string }
+  | { kind: "at" }
+  | { kind: "period"; text: string }
   | { kind: "op"; op: string }
   | { kind: "end" };
 
@@ -30,6 +42,11 @@ const CELL_REF = /^\$?([A-Za-z]{1,3})\$?([0-9]+)(?![A-Za-z0-9_.(])/;
 const NUMBER = /^(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_.]*/;
 const OPERATORS = ["<>", "<=", ">=", "+", "-", "*", "/", "^", "%", "=", "<", ">", "(", ")", ","];
+const QUOTED_SHEET = /^'((?:[^']|'')+)'/;
+const COLUMN = /^\[([^\]]*)\]/;
+/** Period literals, longest first (SPECS.md §3.1). */
+const PERIOD =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}|\d{4}-\d{2}-\d{2}|\d{4}-W\d{2}|\d{4}-Q[1-4]|\d{4}-\d{2}|\d{4})(?![\w.])/;
 
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
@@ -41,9 +58,31 @@ function tokenize(text: string): Token[] {
       pos += space[0].length;
       continue;
     }
+    const quoted = QUOTED_SHEET.exec(rest);
+    if (quoted) {
+      tokens.push({ kind: "sheet", name: (quoted[1] ?? "").replaceAll("''", "'") });
+      pos += quoted[0].length;
+      continue;
+    }
+    const column = COLUMN.exec(rest);
+    if (column) {
+      tokens.push({ kind: "column", name: (column[1] ?? "").trim() });
+      pos += column[0].length;
+      continue;
+    }
+    if (rest.startsWith("@")) {
+      tokens.push({ kind: "at" });
+      pos += 1;
+      const period = PERIOD.exec(text.slice(pos));
+      if (period?.[1]) {
+        tokens.push({ kind: "period", text: period[1] });
+        pos += period[0].length;
+      }
+      continue;
+    }
     const ref = CELL_REF.exec(rest);
     if (ref) {
-      tokens.push({ kind: "ref", address: `${ref[1]?.toUpperCase()}${ref[2]}` });
+      tokens.push({ kind: "ref", address: `${ref[1]?.toUpperCase()}${ref[2]}`, text: ref[0] });
       pos += ref[0].length;
       continue;
     }
@@ -55,7 +94,7 @@ function tokenize(text: string): Token[] {
     }
     const name = NAME.exec(rest);
     if (name) {
-      tokens.push({ kind: "name", name: name[0].toUpperCase() });
+      tokens.push({ kind: "name", name: name[0].toUpperCase(), text: name[0] });
       pos += name[0].length;
       continue;
     }
@@ -167,14 +206,54 @@ class Parser {
     return this.primary();
   }
 
+  /** Whether the next token continues a series lookup (`[Column]` or `@`). */
+  private startsLookup(): boolean {
+    const next = this.peek().kind;
+    return next === "column" || next === "at";
+  }
+
+  /** Parses the rest of a series lookup, after the sheet name: `[Column]@Time` or `@Time`. */
+  private lookup(sheet: string): Expr {
+    let column: string | undefined;
+    const bracket = this.peek();
+    if (bracket.kind === "column") {
+      this.pos++;
+      column = bracket.name;
+    }
+    const at = this.next();
+    if (at.kind !== "at") {
+      throw new FormulaSyntaxError(`Expected '@' and a time after ${sheet}, found ${describe(at)}`);
+    }
+    const time = this.next();
+    const when: LookupTime | undefined =
+      time.kind === "period"
+        ? { kind: "period", text: time.text }
+        : time.kind === "ref"
+          ? { kind: "ref", address: time.address }
+          : undefined;
+    if (!when) {
+      throw new FormulaSyntaxError(
+        `Expected a period (like 2026-10) or a cell after '@', found ${describe(time)}`,
+      );
+    }
+    return column === undefined
+      ? { type: "lookup", sheet, when }
+      : { type: "lookup", sheet, column, when };
+  }
+
   private primary(): Expr {
     const token = this.next();
     switch (token.kind) {
       case "number":
         return { type: "number", value: token.value };
       case "ref":
+        // A sheet whose name looks like a cell reference, e.g. Q1[Rate]@2027.
+        if (this.startsLookup()) return this.lookup(token.text);
         return { type: "ref", address: token.address };
+      case "sheet":
+        return this.lookup(token.name);
       case "name": {
+        if (this.startsLookup()) return this.lookup(token.text);
         // TRUE and FALSE are Excel's boolean literals; as numbers they are 1 and 0.
         if (this.peekOp() !== "(" && (token.name === "TRUE" || token.name === "FALSE")) {
           return { type: "number", value: token.name === "TRUE" ? 1 : 0 };
@@ -213,6 +292,14 @@ function describe(token: Token): string {
       return `reference ${token.address}`;
     case "name":
       return `name ${token.name}`;
+    case "sheet":
+      return `sheet '${token.name}'`;
+    case "column":
+      return `[${token.name}]`;
+    case "at":
+      return "'@'";
+    case "period":
+      return `period ${token.text}`;
     case "op":
       return `'${token.op}'`;
     case "end":

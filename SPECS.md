@@ -223,6 +223,19 @@ A time-series worksheet contains **only series columns**. It has no free-form ce
 - **Changing frequency or anchor (proposed):** if entries already exist, the user is warned. Entries are then mapped to the new periods or discarded; they are never silently misaligned.
 - **Hourly frequency (proposed):** timestamps are wall-clock local time with no time zone. This avoids daylight-saving surprises.
 
+### 5.2.1 Current implementation
+
+- **Creating one:** **Model → New series sheet** creates "SeriesN" with the defaults: monthly, type Level, one value column called "Value", 24 periods starting with the current month.
+- **Model → New sheet** adds a standard sheet.
+- **Layout:** a series sheet has **no row numbers**. Its columns are headed by name: **Period** (the time column, column A) first, then the value columns (B, C, …).
+  - Periods start at row 1.
+  - A sheet can have several value columns, e.g. Open, High, Low, Close for a price series.
+  - **Add value column** in the sheet's toolbar adds ValueN.
+  - **Double-clicking a value column's header** renames it. Names must be unique (ignoring case), can't be "Period", and can't contain `[ ] @ '`.
+- **Time column:** it can be edited. Any row whose time value is missing or doesn't match the sheet's granularity is shown red.
+- **Sheet toolbar:** **Granularity** and **Type**. Changing the granularity re-checks every row.
+- **Saving:** the settings are saved with the sheet (`series: { granularity, type, columns }` in the file). Files without `columns` get a single "Value" column.
+
 ### 5.3 Lookups: structured references
 
 Other worksheets read time-series values with **structured references** of the form:
@@ -252,6 +265,16 @@ Sheet[Series]@When
 | Hour | `2027-01-15T09` |
 
 **Granularity of values from cells.** When the `@` part comes from a cell or an expression, the lookup uses the **granularity tag of the date** (§3.1). For example, if `A1` holds `2027-02-15` (a day), then `Rates[Rate]@A1` is a daily lookup and `Rates[Rate]@PERIOD.QUARTER(A1)` is a quarterly lookup. The lookup mapping config (§5.4) then decides how the lookup is resolved against the worksheet's frequency.
+
+**Current implementation:**
+- **Supported forms:** `Sheet[Column]@Period`, and `Sheet@Period` for the first value column.
+  - The period is a literal, or a cell on the same sheet holding a period.
+  - Sheet and column names are matched ignoring case.
+- **Compiling:** the whole workbook compiles into one program. Each lookup resolves at compile time to the single series cell it names, so it compiles to an ordinary cross-sheet reference, and uncertain series values carry their uncertainty through.
+- **Errors:**
+  - `#N/A` when the period isn't in the time column, the value cell is empty, or the period has a different granularity from the sheet. The lookup mapping (§5.4) comes later.
+  - `#REF!` for an unknown sheet or column, or a sheet that isn't a series sheet.
+  - `#VALUE!` when the time cell doesn't hold a period. Calculated times aren't supported yet.
 
 **Autocomplete.** The formula editor suggests sheet names, series names and period literals as the user types a structured reference.
 
@@ -422,6 +445,15 @@ This gives each variable any distribution it needs, while keeping the dependence
   - **Hard cap:** a maximum number of retained samples per cell, for example 100,000. It limits memory and stops models that never settle. A cell that hits the cap without settling is flagged.
   - **Status:** each cell shows whether it is *sampling* or *settled*, with its sample count (§6.4).
   - **Reset restarts settling:** a reset (above) also clears a group's settled state, and sampling for that group resumes automatically.
+- **Progressive, batched runs (implemented):**
+  - Each engine evaluates its iterations in **batches**, contiguous ranges `[start, start + n)`.
+  - Every batch is folded into per-cell running statistics (`CellAccumulator`: count, mean and variance merged with Chan's parallel formula, the first value, NaN/infinity flags, and a streaming histogram). Samples are then discarded.
+  - **Memory depends on the batch size, not the total**, so CPU and GPU iterations can each go up to 1,000,000,000.
+  - The grid refreshes about 5 times a second while batches arrive, and the status shows progress, e.g. `GPU 350,000 / 1,000,000 · CPU 10,000 / 10,000 · agree so far`.
+  - A model edit or settings change cancels the run and starts a new one.
+  - **GPU batches:** the backend asks the adapter for its full storage-buffer limits. Its batch is the largest that fits one storage binding (outputs × iterations × 4 bytes), capped at 262,144, and the compiled pipeline is cached across batches.
+  - **CPU batches:** 1,000 iterations per worker, and each worker receives the program once.
+  - **The CPU–GPU comparison** (§6.7) runs incrementally over the first min(CPU, GPU, 100,000) iterations as both engines cover them.
 - **Memory at GPU speeds (proposed, after the GPU prototype §6.6):** if storing every raw sample becomes too costly, keep raw samples up to a limit, and after that only running summaries: a histogram, moments, and a quantile sketch such as t-digest.
 - **Pause and resume:** the user can pause and resume sampling. This helps with large models or when saving battery.
 - **Random seed:** optional, for reproducible results.
@@ -582,6 +614,12 @@ By default, **the CPU and GPU backends both run all the time, in parallel**, on 
 - **Two answers per cell:**
   - Every uncertain cell keeps **two** sets of retained values: one from the CPU (`f64`) and one from the GPU (`f32`).
   - Each set has its own statistics and its own settling state (§6.3).
+- **Config menu (implemented):**
+  - "CPU iterations" (default 10,000) and "GPU iterations" (default 100,000), each from 0 to 1,000,000,000 (runs go in batches, so memory no longer limits the total). 0 disables that engine, and at least one must run.
+  - The settings are saved per browser.
+  - With both running, the GPU's results are shown. Both use the same seed, and the CPU's samples are compared with the first `min(cpu, gpu)` GPU iterations.
+  - The status reads `GPU 100,000 + CPU 10,000 · agree`, or lists the cells that differ.
+  - Without WebGPU, the GPU field is disabled and the CPU always runs.
 - **User control:** either backend can be switched off in settings.
   - **GPU off:** CPU only, pure `f64` (§6.6 precision).
   - **CPU off:** GPU only, maximum speed. No cross-check is possible.

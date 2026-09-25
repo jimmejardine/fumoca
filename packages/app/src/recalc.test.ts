@@ -2,7 +2,14 @@ import { type Backend, evaluateCpu } from "@fumoca/engine";
 import { createSheet } from "@fumoca/storage";
 import { describe, expect, it } from "vitest";
 import { parseCellInput } from "./cellInput";
-import { formatNumber, formatResult, formatUncertain, HISTOGRAM_BINS, recalculate } from "./recalc";
+import {
+  formatNumber,
+  formatResult,
+  formatUncertain,
+  HISTOGRAM_BINS,
+  recalculate,
+  startRecalculation,
+} from "./recalc";
 
 /** A synchronous stand-in for the CPU/GPU backends. */
 const fakeBackend: Backend = {
@@ -13,7 +20,11 @@ const fakeBackend: Backend = {
 
 async function calc(cells: Record<string, number | string>) {
   const sheet = createSheet("S", cells);
-  const results = await recalculate({ sheets: [sheet] }, fakeBackend, { seed: 1, count: 20_000 });
+  const { results } = await recalculate(
+    { sheets: [sheet] },
+    { primary: { backend: fakeBackend, count: 20_000 } },
+    { seed: 1 },
+  );
   return results.get(sheet.id) ?? new Map();
 }
 
@@ -65,6 +76,119 @@ describe("recalculate", () => {
     expect(results.get("A3")).toMatchObject({ kind: "error", code: "#NAME?" });
     expect(results.get("A4")).toMatchObject({ kind: "error", code: "#NUM!" });
     expect(results.get("A5")).toMatchObject({ kind: "error", code: "#DIV/0!" });
+  });
+});
+
+describe("recalculate with two engines", () => {
+  const sheet = createSheet("S", { A1: "=NORMAL(100, 10)", A2: "=A1 * 2", A3: 5 });
+  const workbook = { sheets: [sheet] };
+
+  it("shows the primary's results and reports agreement over the shared iterations", async () => {
+    const { results, comparison } = await recalculate(
+      workbook,
+      {
+        primary: { backend: fakeBackend, count: 20_000 },
+        secondary: { backend: fakeBackend, count: 5_000 },
+      },
+      { seed: 1 },
+    );
+    expect(comparison).toEqual({ compared: 5_000, total: 5_000, differing: [] });
+    expect(results.get(sheet.id)?.get("A2")).toMatchObject({ kind: "uncertain" });
+  });
+
+  it("reports cells where the engines differ", async () => {
+    // A broken backend: every value of A2 is off by 1.
+    const broken: Backend = {
+      name: "broken",
+      run: async (program, options) => {
+        const samples = evaluateCpu(program, options);
+        // Workbook programs key cells by sheet index and address.
+        const a2 = samples.get("0!A2");
+        if (a2)
+          samples.set(
+            "0!A2",
+            a2.map((x) => x + 1),
+          );
+        return samples;
+      },
+      dispose: () => {},
+    };
+    const { comparison } = await recalculate(
+      workbook,
+      {
+        primary: { backend: broken, count: 10_000 },
+        secondary: { backend: fakeBackend, count: 10_000 },
+      },
+      { seed: 1 },
+    );
+    expect(comparison?.differing).toEqual([{ sheetId: sheet.id, address: "A2" }]);
+  });
+
+  it("has no comparison with a single engine", async () => {
+    const result = await recalculate(
+      workbook,
+      { primary: { backend: fakeBackend, count: 100 } },
+      { seed: 1 },
+    );
+    expect(result.comparison).toBeUndefined();
+  });
+});
+
+describe("progressive recalculation", () => {
+  it("delivers rising progress and sharpening results, then a complete final update", async () => {
+    const sheet = createSheet("S", { A1: "=NORMAL(100, 10)", A2: 5 });
+    const updates: { done: number; complete: boolean; count: number }[] = [];
+    const final = await startRecalculation(
+      { sheets: [sheet] },
+      { primary: { backend: fakeBackend, count: 50_000, batch: 10_000 } },
+      { seed: 1, throttleMs: 0 },
+      (update) => {
+        const a1 = update.results.get(sheet.id)?.get("A1");
+        updates.push({
+          done: update.progress.primary.done,
+          complete: update.complete,
+          count: a1?.kind === "uncertain" ? 1 : 0,
+        });
+      },
+    ).done;
+    expect(updates.map((u) => u.done)).toEqual([10_000, 20_000, 30_000, 40_000, 50_000, 50_000]);
+    expect(updates.at(-1)?.complete).toBe(true);
+    expect(final?.results.get(sheet.id)?.get("A2")).toMatchObject({ kind: "number", value: 5 });
+  });
+
+  it("can be cancelled", async () => {
+    const sheet = createSheet("S", { A1: "=NORMAL(100, 10)" });
+    let updates = 0;
+    const running = startRecalculation(
+      { sheets: [sheet] },
+      { primary: { backend: fakeBackend, count: 1_000_000, batch: 1_000 } },
+      { seed: 1, throttleMs: 0 },
+      () => {
+        updates++;
+        if (updates === 3) running.cancel();
+      },
+    );
+    expect(await running.done).toBeNull();
+    expect(updates).toBe(3);
+  });
+});
+
+describe("GPU results", () => {
+  it("show deterministic f32 values to f32 precision, so exact inputs look exact", async () => {
+    const f32Backend: Backend = {
+      name: "gpu-like",
+      run: async (program, options) =>
+        new Map([...evaluateCpu(program, options)].map(([key, v]) => [key, Float32Array.from(v)])),
+      dispose: () => {},
+    };
+    const sheet = createSheet("S", { A1: 103.2, A2: "=A1 * 1" });
+    const { results } = await recalculate(
+      { sheets: [sheet] },
+      { primary: { backend: f32Backend, count: 10, f32: true } },
+      { seed: 1 },
+    );
+    expect(Math.fround(103.2)).not.toBe(103.2); // f32 can't hold 103.2 exactly
+    expect(results.get(sheet.id)?.get("A2")).toMatchObject({ kind: "number", value: 103.2 });
   });
 });
 

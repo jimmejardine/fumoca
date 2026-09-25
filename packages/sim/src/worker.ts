@@ -1,5 +1,5 @@
-import { evaluateCpu } from "@fumoca/engine";
-import type { WorkerRequest, WorkerResponse } from "./protocol";
+import { evaluateCpu, type Program } from "@fumoca/engine";
+import { PROGRAM_CACHE_SIZE, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 /** The parts of a dedicated worker's global scope this module uses. */
 interface WorkerScope {
@@ -9,8 +9,24 @@ interface WorkerScope {
 
 const scope = self as unknown as WorkerScope;
 
-scope.onmessage = ({ data: { id, program, options } }) => {
+/** Programs received from the main thread, oldest first. */
+const programs = new Map<number, Program>();
+
+scope.onmessage = ({ data: request }) => {
+  if (request.type === "program") {
+    programs.set(request.programId, request.program);
+    while (programs.size > PROGRAM_CACHE_SIZE) {
+      const oldest = programs.keys().next().value;
+      if (oldest === undefined) break;
+      programs.delete(oldest);
+    }
+    return;
+  }
+
+  const { id, programId, options } = request;
   try {
+    const program = programs.get(programId);
+    if (!program) throw new Error(`Worker has no program ${programId}`);
     const samples = evaluateCpu(program, options);
     // Transfer the sample buffers rather than copying them (SPECS.md §6.4).
     const buffers = [...samples.values()].map((array) => array.buffer);

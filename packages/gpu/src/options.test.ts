@@ -1,5 +1,5 @@
 import { type CellInputs, compile, type RunOptions } from "@fumoca/engine";
-import { CpuBackend } from "@fumoca/sim";
+import { CpuBackend, runProgressively } from "@fumoca/sim";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GpuBackend } from "./run";
 
@@ -78,11 +78,12 @@ function expectWithinStandardErrors(label: string, actual: Estimate, exact: numb
   ).toBeLessThan(4);
 }
 
-function checkPrices(results: Map<string, ArrayLike<number>>, label: string): void {
+function checkPrices(estimates: Map<string, Estimate>, label: string): void {
   const exact = blackScholes(PARAMS);
-  const call = estimate(results.get("B2") ?? []);
-  const put = estimate(results.get("B3") ?? []);
-  const stock = estimate(results.get("B4") ?? []);
+  const none = { mean: Number.NaN, standardError: Number.NaN };
+  const call = estimates.get("B2") ?? none;
+  const put = estimates.get("B3") ?? none;
+  const stock = estimates.get("B4") ?? none;
   const show = (e: Estimate, exactValue: number) =>
     `${e.mean.toFixed(4)} ± ${e.standardError.toFixed(4)} (exact ${exactValue.toFixed(4)})`;
   console.log(
@@ -126,16 +127,26 @@ describe("European option pricing vs Black–Scholes", () => {
 
   it("matches on the CPU", async () => {
     const options: RunOptions = { seed: 314, iterationStart: 0, count: 500_000, outputs: OUTPUTS };
-    checkPrices(await cpu.run(compile(MODEL), options), "CPU");
+    const samples = await cpu.run(compile(MODEL), options);
+    checkPrices(new Map(OUTPUTS.map((o) => [o, estimate(samples.get(o) ?? [])])), "CPU");
   });
 
-  it("matches on the GPU", async () => {
-    const options: RunOptions = {
-      seed: 314,
-      iterationStart: 0,
-      count: 4_000_000,
-      outputs: OUTPUTS,
-    };
-    checkPrices(await gpu.run(compile(MODEL), options), "GPU");
+  it("matches on the GPU, over 4,000,000 iterations in batches", async () => {
+    const final = await runProgressively(
+      compile(MODEL),
+      { outputs: OUTPUTS, seed: 314, primary: { backend: gpu, total: 4_000_000 } },
+      () => {},
+    );
+    const estimates = new Map(
+      OUTPUTS.map((o) => {
+        const acc = final.primary.accumulators.get(o);
+        const count = acc?.count ?? 0;
+        return [
+          o,
+          { mean: acc?.mean ?? Number.NaN, standardError: (acc?.sd ?? 0) / Math.sqrt(count) },
+        ];
+      }),
+    );
+    checkPrices(estimates, "GPU");
   });
 });

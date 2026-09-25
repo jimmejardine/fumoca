@@ -1,4 +1,4 @@
-import { type Backend, compile, evaluateCpu } from "@fumoca/engine";
+import { type Backend, compile, compileWorkbook, evaluateCpu } from "@fumoca/engine";
 import { parseWorkbook, serializeWorkbook } from "@fumoca/storage";
 import { describe, expect, it } from "vitest";
 import { recalculate } from "./recalc";
@@ -10,12 +10,46 @@ describe("test model", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it.each(createTestWorkbook().sheets.map((sheet) => [sheet.name, sheet] as const))(
-    "sheet %s compiles with the engine",
-    (_, sheet) => {
-      expect(() => compile(sheet.cells)).not.toThrow();
-    },
-  );
+  it("compiles with the engine, with errors only where the Lookups sheet expects them", () => {
+    const workbook = createTestWorkbook();
+    const { sheets } = compileWorkbook(
+      workbook.sheets.map(({ name, cells, series }) =>
+        series
+          ? { name, cells, series: { granularity: series.granularity, columns: series.columns } }
+          : { name, cells },
+      ),
+    );
+    const errors = workbook.sheets.flatMap((sheet, i) =>
+      [...(sheets[i]?.errors ?? [])].map(([address, e]) => `${sheet.name}!${address} ${e.code}`),
+    );
+    expect(errors.sort()).toEqual(["Lookups!B8 #N/A", "Lookups!B9 #N/A"]);
+  });
+
+  it("looks up values from the Prices series sheet", async () => {
+    const workbook = createTestWorkbook();
+    const lookups = workbook.sheets.find((s) => s.name === "Lookups");
+    const backend: Backend = {
+      name: "cpu",
+      run: async (program, options) => evaluateCpu(program, options),
+      dispose: () => {},
+    };
+    const { results } = await recalculate(
+      workbook,
+      { primary: { backend, count: 20_000 } },
+      { seed: 3 },
+    );
+    const value = (address: string) => {
+      const result = lookups ? results.get(lookups.id)?.get(address) : undefined;
+      return result?.kind === "number" ? result.value : result;
+    };
+    expect(value("B2")).toBe(103.2);
+    expect(value("B3")).toBe(101.5);
+    expect(value("B5")).toBe(102.7);
+    expect(value("B6")).toBeCloseTo(0.8, 10);
+    const uncertain = lookups ? results.get(lookups.id)?.get("B7") : undefined;
+    expect(uncertain).toMatchObject({ kind: "uncertain" });
+    if (uncertain?.kind === "uncertain") expect(uncertain.mean).toBeCloseTo(210, 0);
+  });
 
   it("survives a save and load", () => {
     const workbook = createTestWorkbook();
@@ -62,7 +96,11 @@ describe("test model", () => {
     const sheet = workbook.sheets.find((s) => s.name === "Functions");
     if (!sheet) throw new Error("No functions sheet");
     const count = 50_000;
-    const results = await recalculate({ sheets: [sheet] }, backend, { seed: 7, count });
+    const { results } = await recalculate(
+      { sheets: [sheet] },
+      { primary: { backend, count } },
+      { seed: 7 },
+    );
     const result = results.get(sheet.id)?.get(address);
     if (result?.kind !== "uncertain") throw new Error(`${address} is not uncertain`);
     // Mean within 5 standard errors; SD within 2%.

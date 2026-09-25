@@ -58,6 +58,19 @@ describe("CpuBackend", () => {
     expect(b.get("B1")).toEqual(evaluateCpu(MODEL, options(2)).get("B1"));
   });
 
+  it("sends each program once, and resends one the workers have since dropped", async () => {
+    backend = new CpuBackend({ workers: 2 });
+    const options: RunOptions = { seed: 5, iterationStart: 0, count: 500, outputs: ["A1"] };
+    const programs = Array.from({ length: 6 }, (_, i) => compile({ A1: `=NORMAL(${i}, 1)` }));
+    for (const program of programs) {
+      expect(await backend.run(program, options)).toEqual(evaluateCpu(program, options));
+    }
+    // The first program has been evicted from the workers' caches by now.
+    const first = programs[0];
+    if (!first) throw new Error("no program");
+    expect(await backend.run(first, options)).toEqual(evaluateCpu(first, options));
+  });
+
   it("reports errors from workers", async () => {
     backend = new CpuBackend({ workers: 2 });
     await expect(

@@ -2,7 +2,7 @@ import { createSheet, type Workbook } from "@fumoca/storage";
 
 /**
  * The test model we use to evaluate progress. Each sheet exercises one area of the engine.
- * Sheets don't refer to each other yet, because cross-sheet references aren't supported.
+ * The Lookups sheet reads values from the Prices series sheet (SPECS.md §5.3).
  */
 export function createTestWorkbook(): Workbook {
   return {
@@ -101,6 +101,58 @@ export function createTestWorkbook(): Workbook {
         B3: "=SQRT(B2) + LN(B1) - EXP(0.5)",
         A4: "IF and powers",
         B4: "=IF(B2 > 1000, MAX(B2, B3), MIN(B2, B3)) + 2^10 + 12.5%",
+      }),
+      createSheet(
+        "Prices",
+        {
+          A1: "2026-01",
+          B1: 100,
+          C1: 101.5,
+          A2: "2026-02",
+          B2: 101.5,
+          C2: 99.8,
+          A3: "2026-03",
+          B3: 99.8,
+          C3: 103.2,
+          A4: "2026-04",
+          B4: 103.2,
+          C4: 104.0,
+          A5: "2026-05",
+          B5: 104.0,
+          C5: 102.7,
+          A6: "2026-06",
+          B6: 102.7,
+          C6: "=NORMAL(105, 3)",
+        },
+        { granularity: "month", type: "level", columns: ["Open", "Close"] },
+      ),
+      createSheet("Lookups", {
+        A1: "Lookup",
+        B1: "Result",
+        C1: "Expected",
+        A2: "Close in 2026-03",
+        B2: "=Prices[Close]@2026-03",
+        C2: "103.2",
+        A3: "First column (Open), 2026-02",
+        B3: "=Prices@2026-02",
+        C3: "101.5",
+        A4: "Period in a cell",
+        B4: "2026-05",
+        A5: "Close at the period in B4",
+        B5: "=Prices[Close]@B4",
+        C5: "102.7",
+        A6: "Close − Open, 2026-04",
+        B6: "=Prices[Close]@2026-04 - Prices[Open]@2026-04",
+        C6: "0.8",
+        A7: "Uncertain close, 2026-06, × 2",
+        B7: "=Prices[Close]@2026-06 * 2",
+        C7: "210 ± 6",
+        A8: "Period not in Prices",
+        B8: "=Prices[Close]@2027-01",
+        C8: "#N/A",
+        A9: "Quarter in a monthly sheet",
+        B9: "=Prices[Close]@2026-Q1",
+        C9: "#N/A",
       }),
     ],
   };

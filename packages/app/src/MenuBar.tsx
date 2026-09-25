@@ -1,15 +1,34 @@
 import { Button, Group, Menu, Text } from "@mantine/core";
-import { IconDeviceFloppy, IconFile, IconFolderOpen } from "@tabler/icons-react";
+import {
+  IconDeviceFloppy,
+  IconFile,
+  IconFolderOpen,
+  IconTablePlus,
+  IconTimeline,
+} from "@tabler/icons-react";
+import { ConfigMenu, type ConfigMenuProps } from "./ConfigMenu";
 
 export interface MenuBarProps {
+  config: ConfigMenuProps;
   title: string;
   dirty: boolean;
   onNew: () => void;
   onSave: () => void;
   onLoad: () => void;
+  onNewSheet: () => void;
+  onNewSeriesSheet: () => void;
 }
 
-export function MenuBar({ title, dirty, onNew, onSave, onLoad }: MenuBarProps) {
+export function MenuBar({
+  config,
+  title,
+  dirty,
+  onNew,
+  onSave,
+  onLoad,
+  onNewSheet,
+  onNewSeriesSheet,
+}: MenuBarProps) {
   return (
     <Group h={36} px="xs" gap="xs" wrap="nowrap" justify="space-between">
       <Group gap={4} wrap="nowrap">
@@ -34,6 +53,22 @@ export function MenuBar({ title, dirty, onNew, onSave, onLoad }: MenuBarProps) {
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>
+        <Menu position="bottom-start" shadow="md" width={200}>
+          <Menu.Target>
+            <Button variant="subtle" color="gray" size="compact-sm">
+              Model
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item leftSection={<IconTablePlus size={16} />} onClick={onNewSheet}>
+              New sheet
+            </Menu.Item>
+            <Menu.Item leftSection={<IconTimeline size={16} />} onClick={onNewSeriesSheet}>
+              New series sheet
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+        <ConfigMenu {...config} />
       </Group>
       <Text size="sm" c="dimmed" truncate data-testid="model-title">
         {title}

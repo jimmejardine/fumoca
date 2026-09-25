@@ -2,101 +2,40 @@ import { type Backend, outputRegisters, type Program, type RunOptions } from "@f
 import { generateWgsl, WORKGROUP_SIZE } from "./wgsl";
 
 /** The largest batch a single one-dimensional dispatch can cover. */
-const MAX_COUNT = 65535 * WORKGROUP_SIZE;
+const MAX_DISPATCH = 65535 * WORKGROUP_SIZE;
 
-/** Requests a WebGPU device, or returns null when WebGPU isn't available. */
+/** Batches bigger than this gain little and make progress updates less frequent. */
+const MAX_BATCH = 262_144;
+
+/**
+ * Requests a WebGPU device, or returns null when WebGPU isn't available. Asks for the adapter's
+ * full storage-buffer limits: the defaults (128 MB bindings) are far below what most GPUs allow.
+ */
 async function requestGpuDevice(): Promise<GPUDevice | null> {
   if (typeof navigator === "undefined" || !navigator.gpu) return null;
   const adapter = await navigator.gpu.requestAdapter();
-  return adapter ? adapter.requestDevice() : null;
-}
-
-/** Evaluates a program on the GPU in f32, returning the samples of each output cell. */
-async function runGpu(
-  device: GPUDevice,
-  program: Program,
-  options: RunOptions,
-): Promise<Map<string, Float32Array>> {
-  const { seed, iterationStart, count, outputs } = options;
-  if (count < 1 || count > MAX_COUNT) {
-    throw new RangeError(`count must be between 1 and ${MAX_COUNT}`);
-  }
-  const code = generateWgsl(program, outputRegisters(program, outputs));
-
-  device.pushErrorScope("validation");
-  const module = device.createShaderModule({ code });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === "error");
-  if (errors.length > 0) {
-    await device.popErrorScope();
-    const details = errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join("\n");
-    throw new Error(`WGSL compilation failed:\n${details}\n\n${code}`);
-  }
-  const pipeline = device.createComputePipeline({
-    layout: "auto",
-    compute: { module, entryPoint: "main" },
+  if (!adapter) return null;
+  return adapter.requestDevice({
+    requiredLimits: {
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      maxBufferSize: adapter.limits.maxBufferSize,
+    },
   });
-
-  const outputBytes = outputs.length * count * Float32Array.BYTES_PER_ELEMENT;
-  const params = device.createBuffer({
-    size: 16,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  const out = device.createBuffer({
-    size: outputBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-  });
-  const readback = device.createBuffer({
-    size: outputBytes,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-
-  try {
-    device.queue.writeBuffer(
-      params,
-      0,
-      new Uint32Array([seed >>> 0, iterationStart >>> 0, count, 0]),
-    );
-    const bindGroup = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: params } },
-        { binding: 1, resource: { buffer: out } },
-      ],
-    });
-
-    const encoder = device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(count / WORKGROUP_SIZE));
-    pass.end();
-    encoder.copyBufferToBuffer(out, 0, readback, 0, outputBytes);
-    device.queue.submit([encoder.finish()]);
-
-    const validation = await device.popErrorScope();
-    if (validation) throw new Error(`WebGPU validation error: ${validation.message}`);
-
-    await readback.mapAsync(GPUMapMode.READ);
-    const all = new Float32Array(readback.getMappedRange().slice(0));
-    readback.unmap();
-    return new Map(
-      outputs.map((address, k) => [address, all.subarray(k * count, (k + 1) * count)]),
-    );
-  } finally {
-    params.destroy();
-    out.destroy();
-    readback.destroy();
-  }
 }
 
 /**
  * The GPU backend: compiles the model to a WGSL kernel and evaluates it in f32 on WebGPU
  * (SPECS.md §6.6). It has the same signature as `CpuBackend`, so the two can be compared
  * iteration by iteration (§6.7).
+ *
+ * Runs are meant to be batches: the compiled pipeline is cached per program and output list, so
+ * repeated batches skip WGSL generation and shader compilation.
  */
 export class GpuBackend implements Backend {
   readonly name = "gpu";
+  /** How many pipelines have been compiled (for tests and diagnostics). */
+  pipelinesCompiled = 0;
+  private readonly pipelines = new WeakMap<Program, Map<string, Promise<GPUComputePipeline>>>();
 
   private constructor(readonly device: GPUDevice) {}
 
@@ -106,11 +45,120 @@ export class GpuBackend implements Backend {
     return device ? new GpuBackend(device) : null;
   }
 
-  run(program: Program, options: RunOptions): Promise<Map<string, Float32Array>> {
-    return runGpu(this.device, program, options);
+  /** The largest batch whose output (outputs × iterations × 4 bytes) fits one storage binding. */
+  maxBatch(outputCount: number): number {
+    const bytesPerIteration = Math.max(1, outputCount) * Float32Array.BYTES_PER_ELEMENT;
+    const fits = Math.floor(this.device.limits.maxStorageBufferBindingSize / bytesPerIteration);
+    return Math.max(1, Math.min(MAX_DISPATCH, MAX_BATCH, fits));
+  }
+
+  /** Evaluates iterations of a program in f32, returning the samples of each output cell. */
+  async run(program: Program, options: RunOptions): Promise<Map<string, Float32Array>> {
+    const { device } = this;
+    const { seed, iterationStart, count, outputs } = options;
+    const limit = this.maxBatch(outputs.length);
+    if (count < 1 || count > limit) {
+      throw new RangeError(
+        `count must be between 1 and ${limit} for ${outputs.length} outputs; run larger counts in batches`,
+      );
+    }
+    const pipeline = await this.pipeline(program, outputs);
+
+    const outputBytes = outputs.length * count * Float32Array.BYTES_PER_ELEMENT;
+    const params = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const out = device.createBuffer({
+      size: outputBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    });
+    const readback = device.createBuffer({
+      size: outputBytes,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+
+    try {
+      device.pushErrorScope("validation");
+      device.queue.writeBuffer(
+        params,
+        0,
+        new Uint32Array([seed >>> 0, iterationStart >>> 0, count, 0]),
+      );
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: params } },
+          { binding: 1, resource: { buffer: out } },
+        ],
+      });
+
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(count / WORKGROUP_SIZE));
+      pass.end();
+      encoder.copyBufferToBuffer(out, 0, readback, 0, outputBytes);
+      device.queue.submit([encoder.finish()]);
+
+      const validation = await device.popErrorScope();
+      if (validation) throw new Error(`WebGPU validation error: ${validation.message}`);
+
+      await readback.mapAsync(GPUMapMode.READ);
+      const all = new Float32Array(readback.getMappedRange().slice(0));
+      readback.unmap();
+      return new Map(
+        outputs.map((address, k) => [address, all.subarray(k * count, (k + 1) * count)]),
+      );
+    } finally {
+      params.destroy();
+      out.destroy();
+      readback.destroy();
+    }
   }
 
   dispose(): void {
     this.device.destroy();
+  }
+
+  /** The compiled pipeline for a program and output list, compiling it on first use. */
+  private pipeline(program: Program, outputs: string[]): Promise<GPUComputePipeline> {
+    let byOutputs = this.pipelines.get(program);
+    if (!byOutputs) {
+      byOutputs = new Map();
+      this.pipelines.set(program, byOutputs);
+    }
+    const key = outputs.join("\u0000");
+    let pipeline = byOutputs.get(key);
+    if (!pipeline) {
+      pipeline = this.compile(program, outputs);
+      byOutputs.set(key, pipeline);
+      // A failed compile shouldn't be cached.
+      pipeline.catch(() => byOutputs?.delete(key));
+    }
+    return pipeline;
+  }
+
+  private async compile(program: Program, outputs: string[]): Promise<GPUComputePipeline> {
+    const { device } = this;
+    const code = generateWgsl(program, outputRegisters(program, outputs));
+    device.pushErrorScope("validation");
+    const module = device.createShaderModule({ code });
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter((m) => m.type === "error");
+    if (errors.length > 0) {
+      await device.popErrorScope();
+      const details = errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join("\n");
+      throw new Error(`WGSL compilation failed:\n${details}\n\n${code}`);
+    }
+    const pipeline = device.createComputePipeline({
+      layout: "auto",
+      compute: { module, entryPoint: "main" },
+    });
+    const validation = await device.popErrorScope();
+    if (validation) throw new Error(`WebGPU validation error: ${validation.message}`);
+    this.pipelinesCompiled++;
+    return pipeline;
   }
 }

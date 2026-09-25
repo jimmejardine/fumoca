@@ -1,4 +1,5 @@
-import type { Sheet } from "@fumoca/storage";
+import { granularityOf } from "@fumoca/engine";
+import { PERIOD_COLUMN, type Sheet } from "@fumoca/storage";
 import { useComputedColorScheme } from "@mantine/core";
 import {
   type CellTemplateProp,
@@ -24,6 +25,8 @@ const COLUMN_LETTERS = Array.from({ length: COLUMN_COUNT }, (_, i) => String.fro
 const ROW_KEY = "_row";
 const rawKey = (prop: string) => `${prop}~raw`;
 const metaKey = (prop: string) => `${prop}~meta`;
+/** Row flag: on a series sheet, the row's time value is missing or of the wrong granularity. */
+const INVALID_KEY = "~invalid";
 
 interface CellMeta {
   kind: CellResult["kind"];
@@ -70,8 +73,13 @@ export function cellPosition(address: string): { x: number; y: number } | null {
 
 function cellProperties({ model, prop }: CellTemplateProp) {
   const meta = model[metaKey(String(prop))] as CellMeta | undefined;
-  if (!meta) return;
-  const names = [classes[meta.kind], meta.root ? classes.root : undefined].filter(Boolean);
+  const invalidRow = model[INVALID_KEY] === true;
+  if (!meta) return invalidRow ? { class: classes.invalidRow ?? "" } : undefined;
+  const names = [
+    classes[meta.kind],
+    meta.root ? classes.root : undefined,
+    invalidRow ? classes.invalidRow : undefined,
+  ].filter(Boolean);
   return {
     class: names.join(" "),
     ...(meta.message ? { title: meta.message } : {}),
@@ -87,13 +95,16 @@ function cellProperties({ model, prop }: CellTemplateProp) {
   };
 }
 
-const COLUMNS = COLUMN_LETTERS.map((letter) => ({
+const column = (letter: string, name: string, size = 120) => ({
   prop: letter,
-  name: letter,
-  size: 120,
+  name,
+  size,
   editor: "formula",
   cellProperties,
-}));
+});
+
+/** Standard sheets: columns A–Z. */
+const COLUMNS = COLUMN_LETTERS.map((letter) => column(letter, letter));
 
 /**
  * The in-grid editor (F2, double-click, or typing). It edits the cell's raw input, the formula or
@@ -159,13 +170,49 @@ export interface SheetGridProps {
   /** Commits edits; returns an error message if an edit was rejected. */
   onCommit: (edits: CellEdit[]) => string | null;
   onCommitError: (message: string) => void;
+  /** Series sheets: a value column's header was double-clicked (0 = the first value column). */
+  onRenameColumn?: (index: number) => void;
 }
 
 /** One worksheet's grid. Cells show calculated answers; root cells are bold (SPECS.md §6.5). */
-export function SheetGrid({ sheet, results, onSelect, onCommit, onCommitError }: SheetGridProps) {
+export function SheetGrid({
+  sheet,
+  results,
+  onSelect,
+  onCommit,
+  onCommitError,
+  onRenameColumn,
+}: SheetGridProps) {
   const colorScheme = useComputedColorScheme("light");
   const gridRef = useRef<HTMLRevoGridElement>(null);
   const [filtered, setFiltered] = useState(false);
+
+  // Series sheets show only the time column and their value columns, headed by name (SPECS.md §5).
+  const seriesColumns = sheet.series?.columns;
+  const columns = useMemo(
+    () =>
+      seriesColumns
+        ? [PERIOD_COLUMN, ...seriesColumns].map((name, i) =>
+            column(COLUMN_LETTERS[i] ?? "A", name, i === 0 ? 110 : 120),
+          )
+        : COLUMNS,
+    [seriesColumns],
+  );
+
+  // Double-clicking a value column's header renames it.
+  const renameRef = useRef(onRenameColumn);
+  renameRef.current = onRenameColumn;
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid || !seriesColumns) return;
+    const listener = (event: MouseEvent) => {
+      const header = (event.target as Element | null)?.closest?.("revogr-header .rgHeaderCell");
+      const index = Number(header?.getAttribute("data-rgcol"));
+      if (header && index >= 1) renameRef.current?.(index - 1);
+    };
+    grid.addEventListener("dblclick", listener);
+    return () => grid.removeEventListener("dblclick", listener);
+  }, [seriesColumns]);
 
   // Row headers show the real row number, not the on-screen position, so they stay correct while
   // a filter hides rows. They turn blue while filtered, as in Excel.
@@ -175,7 +222,13 @@ export function SheetGrid({ sheet, results, onSelect, onCommit, onCommitError }:
       size: 50,
       cellTemplate: (_h: unknown, { model }: CellTemplateProp) =>
         String((model as Row)[ROW_KEY] + 1),
-      cellProperties: () => (filtered ? { class: classes.filteredRowHeader ?? "" } : undefined),
+      cellProperties: ({ model }: CellTemplateProp) => {
+        const names = [
+          filtered ? classes.filteredRowHeader : undefined,
+          model[INVALID_KEY] === true ? classes.invalidRow : undefined,
+        ].filter(Boolean);
+        return names.length > 0 ? { class: names.join(" ") } : undefined;
+      },
     }),
     [filtered],
   );
@@ -225,8 +278,22 @@ export function SheetGrid({ sheet, results, onSelect, onCommit, onCommitError }:
         row[prop] = formatCellInput(value);
       }
     }
+    // Series sheets: every row with content needs a time value of the sheet's granularity
+    // in column A (SPECS.md §5.2). Rows where it's missing or wrong show red.
+    const granularity = sheet.series?.granularity;
+    if (granularity) {
+      const rowsWithContent = new Set<number>();
+      for (const address of Object.keys(sheet.cells)) {
+        const position = cellPosition(address);
+        if (position) rowsWithContent.add(position.y);
+      }
+      for (const y of rowsWithContent) {
+        const row = rows[y];
+        if (row && granularityOf(sheet.cells[`A${y + 1}`]) !== granularity) row[INVALID_KEY] = true;
+      }
+    }
     return rows;
-  }, [sheet.cells, results, colorScheme]);
+  }, [sheet.cells, sheet.series?.granularity, results, colorScheme]);
 
   const commit = (edits: CellEdit[]) => {
     const error = onCommit(edits);
@@ -237,12 +304,12 @@ export function SheetGrid({ sheet, results, onSelect, onCommit, onCommitError }:
     <div className={classes.wrapper}>
       <RevoGrid
         ref={gridRef}
-        columns={COLUMNS}
+        columns={columns}
         source={source}
         editors={EDITORS}
         range
         resize
-        rowHeaders={rowHeaders}
+        rowHeaders={sheet.series ? false : rowHeaders}
         theme={colorScheme === "dark" ? "darkCompact" : "compact"}
         onBeforefilterapply={(event) => {
           setFiltered(Object.keys(event.detail.collection ?? {}).length > 0);

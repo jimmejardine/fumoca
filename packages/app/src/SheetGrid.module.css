@@ -2,6 +2,19 @@
   height: 100%;
 }
 
+/*
+ * Light cell borders in both directions, like a spreadsheet. RevoGrid's compact theme draws row
+ * lines but makes the vertical ones transparent; use the row-line colour for both, so it follows
+ * the light/dark theme.
+ */
+.wrapper :global(revo-grid[theme]) {
+  --rg-theme-cell-vertical-border: var(--rg-theme-cell-border);
+}
+
+.wrapper :global(revogr-header .rgHeaderCell) {
+  box-shadow: inset -1px 0 0 0 var(--rg-theme-cell-border);
+}
+
 /* Cell styles by result kind (SPECS.md §6.5). */
 .number {
   text-align: right;
@@ -44,4 +57,10 @@
 .filteredRowHeader {
   /* biome-ignore lint/complexity/noImportantStyles: must override RevoGrid's theme selector */
   color: var(--mantine-color-blue-6) !important;
+}
+
+/* Series sheets: a row whose time value is missing or has the wrong granularity. */
+.invalidRow {
+  background-color: rgba(250, 82, 82, 0.18);
+  color: var(--mantine-color-red-7);
 }

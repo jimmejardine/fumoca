@@ -1,5 +1,5 @@
 import type { Backend, Program, RunOptions } from "@fumoca/engine";
-import type { WorkerRequest, WorkerResponse } from "./protocol";
+import { PROGRAM_CACHE_SIZE, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 export interface CpuBackendOptions {
   /** Number of workers. Defaults to all cores but one (SPECS.md §6.4). */
@@ -45,6 +45,9 @@ export class CpuBackend implements Backend {
   private readonly pending = new Map<number, Pending>();
   private nextId = 0;
   private disposed = false;
+  /** Programs every worker holds, oldest first, mirroring the workers' own caches. */
+  private readonly sentPrograms: { program: Program; programId: number }[] = [];
+  private nextProgramId = 0;
 
   constructor(options: CpuBackendOptions = {}) {
     const count = options.workers ?? defaultWorkerCount();
@@ -62,10 +65,11 @@ export class CpuBackend implements Backend {
 
   async run(program: Program, options: RunOptions): Promise<Map<string, Float64Array>> {
     if (this.disposed) throw new Error("CpuBackend has been disposed");
+    const programId = this.sendProgram(program);
     const blocks = splitIterations(options.count, this.workerCount);
     const parts = await Promise.all(
       blocks.map((block, w) =>
-        this.request(w, program, {
+        this.request(w, programId, {
           ...options,
           iterationStart: options.iterationStart + block.start,
           count: block.count,
@@ -93,9 +97,24 @@ export class CpuBackend implements Backend {
     this.failAll(new Error("CpuBackend has been disposed"));
   }
 
+  /**
+   * Makes sure every worker has the program, sending it once, and returns its id. Messages to a
+   * worker arrive in order, so the program always arrives before the runs that use it.
+   */
+  private sendProgram(program: Program): number {
+    const sent = this.sentPrograms.find((entry) => entry.program === program);
+    if (sent) return sent.programId;
+    const programId = this.nextProgramId++;
+    const message: WorkerRequest = { type: "program", programId, program };
+    for (const worker of this.workers) worker.postMessage(message);
+    this.sentPrograms.push({ program, programId });
+    if (this.sentPrograms.length > PROGRAM_CACHE_SIZE) this.sentPrograms.shift();
+    return programId;
+  }
+
   private request(
     workerIndex: number,
-    program: Program,
+    programId: number,
     options: RunOptions,
   ): Promise<Map<string, Float64Array>> {
     const worker = this.workers[workerIndex];
@@ -103,7 +122,7 @@ export class CpuBackend implements Backend {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      const request: WorkerRequest = { id, program, options };
+      const request: WorkerRequest = { type: "run", id, programId, options };
       worker.postMessage(request);
     });
   }

@@ -1,5 +1,5 @@
-import type { Workbook } from "@fumoca/storage";
-import { Center, Text, useComputedColorScheme } from "@mantine/core";
+import type { SeriesSettings, Workbook } from "@fumoca/storage";
+import { Box, Center, Stack, Text, useComputedColorScheme } from "@mantine/core";
 import {
   type DockviewApi,
   DockviewReact,
@@ -7,8 +7,10 @@ import {
   themeDark,
   themeLight,
 } from "dockview-react";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useState } from "react";
+import { RenameColumnModal } from "./RenameColumnModal";
 import type { WorkbookResults } from "./recalc";
+import { SeriesToolbar } from "./SeriesToolbar";
 import { type CellEdit, SheetGrid } from "./SheetGrid";
 
 /**
@@ -23,6 +25,9 @@ export interface SheetAreaContextValue {
   /** Commits edits to a sheet; returns an error message if an edit was rejected. */
   onCommit: (sheetId: string, edits: CellEdit[]) => string | null;
   onCommitError: (message: string) => void;
+  onSeriesSettingsChange: (sheetId: string, settings: SeriesSettings) => void;
+  onAddSeriesColumn: (sheetId: string) => void;
+  onRenameSeriesColumn: (sheetId: string, index: number, name: string) => void;
 }
 
 /** Dockview panels are created by dockview, so they read the live workbook from context. */
@@ -35,15 +40,34 @@ interface SheetPanelParams {
 function SheetPanel({ params }: IDockviewPanelProps<SheetPanelParams>) {
   const context = useContext(SheetAreaContext);
   const sheet = context?.workbook.sheets.find((s) => s.id === params.sheetId);
+  const [renaming, setRenaming] = useState<number | null>(null);
   if (!context || !sheet) return null;
-  return (
+  const grid = (
     <SheetGrid
       sheet={sheet}
       results={context.results.get(sheet.id)}
       onSelect={(address) => context.onSelect(sheet.id, address)}
       onCommit={(edits) => context.onCommit(sheet.id, edits)}
       onCommitError={context.onCommitError}
+      onRenameColumn={setRenaming}
     />
+  );
+  if (!sheet.series) return grid;
+  return (
+    <Stack gap={0} h="100%">
+      <SeriesToolbar
+        settings={sheet.series}
+        onChange={(settings) => context.onSeriesSettingsChange(sheet.id, settings)}
+        onAddColumn={() => context.onAddSeriesColumn(sheet.id)}
+      />
+      <RenameColumnModal
+        settings={sheet.series}
+        index={renaming}
+        onRename={(index, name) => context.onRenameSeriesColumn(sheet.id, index, name)}
+        onClose={() => setRenaming(null)}
+      />
+      <Box style={{ flex: 1, minHeight: 0 }}>{grid}</Box>
+    </Stack>
   );
 }
 

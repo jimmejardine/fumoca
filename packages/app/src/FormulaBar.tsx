@@ -7,6 +7,8 @@ export interface FormulaBarProps {
   /** The selected cell's raw content: its formula or value. */
   content: string;
   status: string;
+  /** More detail about the status, shown as a tooltip. */
+  statusDetail?: string | undefined;
   /** Commits the text; returns an error message if it was rejected. */
   onCommit: (text: string) => string | null;
   /** Called after Enter commits, so focus can return to the grid. */
@@ -17,7 +19,14 @@ export interface FormulaBarProps {
  * The formula bar: shows the selected cell's formula or value and lets the user edit it.
  * Enter or Tab commits, Escape reverts, and leaving the bar with changes commits (as in Excel).
  */
-export function FormulaBar({ address, content, status, onCommit, onDone }: FormulaBarProps) {
+export function FormulaBar({
+  address,
+  content,
+  status,
+  statusDetail,
+  onCommit,
+  onDone,
+}: FormulaBarProps) {
   const [draft, setDraft] = useState(content);
   const [error, setError] = useState<string | null>(null);
   // The last text committed, so leaving the bar right after Enter doesn't commit it again.
@@ -80,7 +89,14 @@ export function FormulaBar({ address, content, status, onCommit, onDone }: Formu
         }}
         onBlur={() => commit()}
       />
-      <Text size="xs" c="dimmed" miw={170} ta="right" data-testid="calc-status">
+      <Text
+        size="xs"
+        c="dimmed"
+        miw={170}
+        ta="right"
+        data-testid="calc-status"
+        title={statusDetail}
+      >
         {status}
       </Text>
     </Group>

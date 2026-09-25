@@ -59,11 +59,19 @@ test("starts with an empty model, a File menu and the toolbar", async ({ page })
 test("the toolbar button replaces the model with the test model", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await expect(title(page)).toHaveText("Test model");
-  await expect(tabs(page)).toHaveText(["Option pricing", "Functions", "Deterministic"]);
+  await expect(tabs(page)).toHaveText([
+    "Option pricing",
+    "Functions",
+    "Deterministic",
+    "Prices",
+    "Lookups",
+  ]);
   await expect(page.getByRole("navigation", { name: "Sheets" }).getByRole("button")).toHaveText([
     "Option pricing",
     "Functions",
     "Deterministic",
+    "Prices",
+    "Lookups",
   ]);
   await expect(cell(page, 0, 0)).toHaveText("Spot");
   await expect(cell(page, 0, 1)).toHaveText("100");
@@ -72,7 +80,7 @@ test("the toolbar button replaces the model with the test model", async ({ page 
 test("sheets can be tiled side by side and reopened from the sheet list", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   // Let the first recalculation finish, so the grid isn't re-rendering during the drag.
-  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
   // Drag the Functions tab to the right edge of the group to split the area. Native drag and
   // drop occasionally misses in headless Chromium, so retry the gesture until the split appears.
   await expect(async () => {
@@ -133,7 +141,13 @@ test("saves and loads a model", async ({ page }) => {
     buffer: saved,
   });
   await expect(title(page)).toHaveText("Test model.fumoca");
-  await expect(tabs(page)).toHaveText(["Option pricing", "Functions", "Deterministic"]);
+  await expect(tabs(page)).toHaveText([
+    "Option pricing",
+    "Functions",
+    "Deterministic",
+    "Prices",
+    "Lookups",
+  ]);
   await expect(cell(page, 0, 3)).toHaveText("42");
 });
 
@@ -151,7 +165,7 @@ test("reports files that aren't fumoca workbooks", async ({ page }) => {
 
 test("cells show calculated answers, with root cells in bold", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
-  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
 
   // Option pricing: inputs are roots; the call is an uncertain formula result.
   await expect(cell(page, 0, 1)).toHaveText("100");
@@ -202,7 +216,7 @@ test("F2 edits the cell's formula in the grid", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await tabs(page).filter({ hasText: "Deterministic" }).click();
 
-  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
   await cell(page, 1, 1).click();
   await expect(page.getByLabel("Cell address")).toHaveValue("B2");
   await page.keyboard.press("F2");
@@ -249,7 +263,7 @@ async function filterColumn(page: Page, column: string, value: string) {
 
 test("row numbers stay correct while a filter hides rows", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
-  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
   await expect(rowHeader(page, 0)).toHaveText("1");
   await expect(rowHeader(page, 1)).toHaveText("2");
   const unfilteredColor = await rowHeader(page, 0).evaluate((e) => getComputedStyle(e).color);
@@ -284,7 +298,7 @@ test("row numbers stay correct while a filter hides rows", async ({ page }) => {
 
 test("the exact option prices follow the inputs, and Monte Carlo agrees", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
-  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
   await expect(cell(page, 13, 1)).toHaveText("8.021352235"); // B14: Black–Scholes call
   await expect(cell(page, 14, 1)).toHaveText("7.900441808"); // B15: Black–Scholes put
 
@@ -300,7 +314,7 @@ test("the exact option prices follow the inputs, and Monte Carlo agrees", async 
 
 test("uncertain cells show a histogram of their samples in the background", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
-  await expect(page.getByTestId("calc-status")).toHaveText(/samples/);
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
   const background = (row: number, col: number) =>
     cell(page, row, col).evaluate((element) => getComputedStyle(element).backgroundImage);
   // B7 (terminal price) and B8 (call payoff) are uncertain.
@@ -310,4 +324,188 @@ test("uncertain cells show a histogram of their samples in the background", asyn
   expect(await background(0, 1)).toBe("none");
   expect(await background(13, 1)).toBe("none");
   expect(await background(0, 0)).toBe("none");
+});
+
+/** Opens the Config menu and applies iteration counts. */
+async function configure(page: Page, values: { cpu?: string; gpu?: string }) {
+  await page.getByRole("button", { name: "Config" }).click();
+  if (values.cpu !== undefined) await page.getByLabel("CPU iterations").fill(values.cpu);
+  if (values.gpu !== undefined) await page.getByLabel("GPU iterations").fill(values.gpu);
+  await page.getByRole("button", { name: "Apply" }).click();
+}
+
+test("the Config menu sets the CPU iterations, and remembers them", async ({ page }) => {
+  await expect(page.getByTestId("calc-status")).toHaveText("CPU · 10,000 runs");
+  await page.getByRole("button", { name: "Config" }).click();
+  await expect(page.getByLabel("CPU iterations")).toHaveValue("10,000");
+  // No WebGPU in this browser: the GPU field is disabled and says why.
+  await expect(page.getByLabel("GPU iterations")).toBeDisabled();
+  await expect(page.getByText("WebGPU is not available in this browser")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await configure(page, { cpu: "5000" });
+  await expect(page.getByTestId("calc-status")).toHaveText("CPU · 5,000 runs");
+  await page.getByRole("button", { name: "Test model" }).click();
+  await expect(cell(page, 1, 1)).toHaveText("105");
+
+  await page.reload();
+  await expect(page.getByTestId("calc-status")).toHaveText("CPU · 5,000 runs");
+});
+
+test("the Config menu requires at least one engine", async ({ page }) => {
+  await configure(page, { cpu: "0" });
+  await expect(page.getByText("At least one engine must run")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByTestId("calc-status")).toHaveText("CPU · 10,000 runs");
+});
+
+test("with both engines, the GPU's results are shown and the CPU agrees @gpu", async ({ page }) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await expect(page.getByTestId("calc-status")).toHaveText("GPU 100,000 + CPU 10,000 · agree", {
+    timeout: 20_000,
+  });
+  // The arrow keys step GPU iterations by 100,000.
+  await page.getByRole("button", { name: "Config" }).click();
+  const gpuIterations = page.getByLabel("GPU iterations");
+  await gpuIterations.press("ArrowUp");
+  await expect(gpuIterations).toHaveValue("200,000");
+  await gpuIterations.press("ArrowDown");
+  await expect(gpuIterations).toHaveValue("100,000");
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await configure(page, { cpu: "0" });
+  await expect(page.getByTestId("calc-status")).toHaveText("GPU · 100,000 runs");
+  await configure(page, { cpu: "20000", gpu: "0" });
+  await expect(page.getByTestId("calc-status")).toHaveText("CPU · 20,000 runs");
+});
+
+async function modelMenu(page: Page, item: "New sheet" | "New series sheet") {
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await page.getByRole("menuitem", { name: item }).click();
+}
+
+const background = (page: Page, row: number, col: number) =>
+  cell(page, row, col).evaluate((element) => getComputedStyle(element).backgroundColor);
+const RED = "rgba(250, 82, 82, 0.18)";
+
+test("Model → New sheet adds and opens a sheet", async ({ page }) => {
+  await modelMenu(page, "New sheet");
+  await expect(tabs(page)).toHaveText(["Sheet1", "Sheet2"]);
+  await expect(page.getByRole("navigation", { name: "Sheets" }).getByRole("button")).toHaveText([
+    "Sheet1",
+    "Sheet2",
+  ]);
+  await expect(title(page)).toHaveText("Untitled •");
+});
+
+test("Model → New series sheet creates a monthly time column with its own toolbar", async ({
+  page,
+}) => {
+  await modelMenu(page, "New series sheet");
+  await expect(tabs(page)).toHaveText(["Sheet1", "Series1"]);
+  await expect(page.locator('input[aria-label="Granularity"]')).toHaveValue("Monthly");
+  await expect(page.locator('input[aria-label="Type"]')).toHaveValue("Level");
+  // Headers name the columns; there are no row numbers.
+  await expect(page.locator("revogr-header .rgHeaderCell .header-content")).toHaveText([
+    "Period",
+    "Value",
+  ]);
+  await expect(page.locator('revogr-data[col-type="rowHeaders"] .rgCell')).toHaveCount(0);
+  await expect(cell(page, 0, 0)).toHaveText(/^\d{4}-\d{2}$/);
+  await expect(cell(page, 1, 0)).toHaveText(/^\d{4}-\d{2}$/);
+  expect(await background(page, 1, 0)).not.toBe(RED);
+
+  // A day in a monthly sheet is the wrong granularity: the whole row turns red.
+  await editCell(page, 3, 0, "2026-09-15");
+  await expect.poll(() => background(page, 3, 0)).toBe(RED);
+  expect(await background(page, 3, 1)).toBe(RED);
+  expect(await background(page, 2, 0)).not.toBe(RED);
+
+  // Switching the sheet to daily flips which rows are wrong.
+  await page.locator('input[aria-label="Granularity"]').click();
+  await page.getByRole("option", { name: "Daily" }).click();
+  await expect.poll(() => background(page, 3, 0)).not.toBe(RED);
+  expect(await background(page, 2, 0)).toBe(RED);
+
+  await page.locator('input[aria-label="Type"]').click();
+  await page.getByRole("option", { name: "Flow" }).click();
+  await expect(page.locator('input[aria-label="Type"]')).toHaveValue("Flow");
+});
+
+test("series sheets can have several value columns, renamed by double-clicking the header", async ({
+  page,
+}) => {
+  await modelMenu(page, "New series sheet");
+  await page.getByRole("button", { name: "Add value column" }).click();
+  const headers = page.locator("revogr-header .rgHeaderCell .header-content");
+  await expect(headers).toHaveText(["Period", "Value", "Value2"]);
+
+  await headers.filter({ hasText: "Value2" }).dblclick();
+  const name = page.getByLabel("Column name");
+  await expect(name).toHaveValue("Value2");
+  await name.fill("value");
+  await page.getByRole("button", { name: "Rename" }).click();
+  await expect(page.getByText("There is already a column called Value")).toBeVisible();
+  await name.fill("Close");
+  await page.getByRole("button", { name: "Rename" }).click();
+  await expect(headers).toHaveText(["Period", "Value", "Close"]);
+});
+
+test("formulas look up values from series sheets", async ({ page }) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/);
+  await tabs(page).filter({ hasText: "Lookups" }).click();
+  await expect(cell(page, 1, 1)).toHaveText("103.2"); // =Prices[Close]@2026-03
+  await expect(cell(page, 2, 1)).toHaveText("101.5"); // =Prices@2026-02 (first column, Open)
+  await expect(cell(page, 4, 1)).toHaveText("102.7"); // =Prices[Close]@B4
+  await expect(cell(page, 7, 1)).toHaveText("#N/A");
+  await expect(cell(page, 7, 1)).toHaveAttribute("title", "Prices has no row for 2027-01");
+
+  // Changing the series value updates the lookup.
+  await tabs(page).filter({ hasText: "Prices" }).click();
+  await editCell(page, 2, 2, "110"); // Close for 2026-03
+  await tabs(page).filter({ hasText: "Lookups" }).click();
+  await expect(cell(page, 1, 1)).toHaveText("110");
+});
+
+test("GPU results show exact inputs exactly, including lookups @gpu", async ({ page }) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await expect(page.getByTestId("calc-status")).toHaveText(/agree/, { timeout: 20_000 });
+  await tabs(page).filter({ hasText: "Lookups" }).click();
+  await expect(cell(page, 1, 1)).toHaveText("103.2"); // not 103.1999969 (f32 rounding)
+  await expect(cell(page, 2, 1)).toHaveText("101.5");
+  await expect(cell(page, 4, 1)).toHaveText("102.7");
+});
+
+test("results update while a long run is in progress", async ({ page }) => {
+  await configure(page, { cpu: "300000" });
+  await page.getByRole("button", { name: "Test model" }).click();
+  // Progress appears while batches arrive, then the final count.
+  await expect(page.getByTestId("calc-status")).toHaveText(/^CPU [\d,]+ \/ 300,000$/);
+  await expect(cell(page, 7, 1)).toHaveText(/ ± /); // answers show before the run finishes
+  await expect(page.getByTestId("calc-status")).toHaveText("CPU · 300,000 runs", {
+    timeout: 60_000,
+  });
+});
+
+test("the GPU runs 1,000,000 iterations in batches, updating as it goes @gpu", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await configure(page, { gpu: "1000000" });
+  await page.getByRole("button", { name: "Test model" }).click();
+  await expect(page.getByTestId("calc-status")).toHaveText(/GPU [\d,]+ \/ 1,000,000/);
+  await expect(page.getByTestId("calc-status")).toHaveText("GPU 1,000,000 + CPU 10,000 · agree", {
+    timeout: 60_000,
+  });
+  await expect(cell(page, 13, 1)).toHaveText(/^8\.0213\d*$/); // exact call, to f32 accuracy
+  expect(errors).toEqual([]);
+});
+
+test("GPU iterations can be set to 10,000,000 @gpu", async ({ page }) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await configure(page, { gpu: "10000000" });
+  await expect(page.getByText(/iterations must be/)).toHaveCount(0);
+  await expect(page.getByTestId("calc-status")).toHaveText(/GPU [\d,]+ \/ 10,000,000/);
 });
