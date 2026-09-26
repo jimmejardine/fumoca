@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { CellAccumulator } from "./accumulator";
+import { CellAccumulator, summarizeBatch } from "./accumulator";
 
 function direct(samples: number[]) {
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
@@ -69,5 +69,31 @@ describe("CellAccumulator", () => {
     acc.add([7]);
     expect(acc.sd).toBe(0);
     expect(acc.mean).toBe(7);
+  });
+
+  it("gives the same statistics from batch summaries as from raw samples", () => {
+    const batches = [
+      [1, 2, 3, 4],
+      [10, Number.NaN, 12],
+      [-5, Number.POSITIVE_INFINITY, 0.5, 7],
+    ];
+    const raw = new CellAccumulator();
+    const summarized = new CellAccumulator();
+    for (const batch of batches) {
+      raw.add(batch);
+      summarized.addSummary(summarizeBatch(batch));
+    }
+    expect(summarized.count).toBe(raw.count);
+    expect(summarized.mean).toBeCloseTo(raw.mean, 12);
+    expect(summarized.sd).toBeCloseTo(raw.sd, 12);
+    expect(summarized.hasNaN).toBe(true);
+    expect(summarized.hasInfinite).toBe(true);
+  });
+
+  it("takes a deterministic cell's value from its first summary", () => {
+    const acc = new CellAccumulator();
+    acc.addSummary(summarizeBatch([42, 42, 42]));
+    expect(acc.first).toBe(42);
+    expect(acc.sd).toBe(0);
   });
 });

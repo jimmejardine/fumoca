@@ -151,9 +151,45 @@ describe("progressive recalculation", () => {
         });
       },
     ).done;
-    expect(updates.map((u) => u.done)).toEqual([10_000, 20_000, 30_000, 40_000, 50_000, 50_000]);
+    const done = updates.map((u) => u.done);
+    expect(done.length).toBeGreaterThan(3);
+    expect(done).toEqual([...done].sort((a, b) => a - b)); // only ever rises
+    expect(done.at(-1)).toBe(50_000);
     expect(updates.at(-1)?.complete).toBe(true);
     expect(final?.results.get(sheet.id)?.get("A2")).toMatchObject({ kind: "number", value: 5 });
+  });
+
+  it("shows the secondary engine's results until the primary has any", async () => {
+    const sheet = createSheet("S", { A1: "=NORMAL(100, 10)" });
+    let releasePrimary: () => void = () => {};
+    const primaryStarted = new Promise<void>((resolve) => {
+      releasePrimary = resolve;
+    });
+    // A primary that waits (like a GPU compiling) until the secondary has reported.
+    const slowPrimary: Backend = {
+      name: "slow",
+      run: async (program, options) => {
+        await primaryStarted;
+        return evaluateCpu(program, options);
+      },
+      dispose: () => {},
+    };
+    const early: string[] = [];
+    await startRecalculation(
+      { sheets: [sheet] },
+      {
+        primary: { backend: slowPrimary, count: 2_000, batch: 1_000 },
+        secondary: { backend: fakeBackend, count: 2_000, batch: 1_000 },
+      },
+      { seed: 1, throttleMs: 0 },
+      (update) => {
+        if (update.progress.primary.done === 0) {
+          early.push(update.results.get(sheet.id)?.get("A1")?.kind ?? "none");
+          releasePrimary();
+        }
+      },
+    ).done;
+    expect(early[0]).toBe("uncertain"); // shown from the secondary while the primary was busy
   });
 
   it("can be cancelled", async () => {

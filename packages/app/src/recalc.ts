@@ -161,12 +161,15 @@ export function startRecalculation(
     );
     for (const key of outputs) {
       const cell = locate(key);
-      const acc = state.primary.accumulators.get(key);
+      // Until the primary engine has results (the GPU may still be compiling a changed model),
+      // show the secondary's, so the grid never waits on the slower engine to start.
+      const primaryAcc = state.primary.accumulators.get(key);
+      const usePrimary = (primaryAcc?.count ?? 0) > 0;
+      const acc = usePrimary ? primaryAcc : state.secondary?.accumulators.get(key);
       if (!cell || !acc || acc.count === 0) continue;
+      const f32 = (usePrimary ? primary.f32 : secondary?.f32) ?? false;
       const root = sheets[cell.sheetIndex]?.roots.has(cell.address) ?? false;
-      results
-        .get(cell.sheet.id)
-        ?.set(cell.address, summarize(acc, uncertain.has(key), root, primary.f32 ?? false));
+      results.get(cell.sheet.id)?.set(cell.address, summarize(acc, uncertain.has(key), root, f32));
     }
     const progress: Recalculation["progress"] = {
       primary: { done: state.primary.done, total: state.primary.total },

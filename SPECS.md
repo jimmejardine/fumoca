@@ -454,6 +454,15 @@ This gives each variable any distribution it needs, while keeping the dependence
   - **GPU batches:** the backend asks the adapter for its full storage-buffer limits. Its batch is the largest that fits one storage binding (outputs × iterations × 4 bytes), capped at 262,144, and the compiled pipeline is cached across batches.
   - **CPU batches:** 1,000 iterations per worker, and each worker receives the program once.
   - **The CPU–GPU comparison** (§6.7) runs incrementally over the first min(CPU, GPU, 100,000) iterations as both engines cover them.
+  - **The engine runs in its own worker (implemented):**
+    - Compiling, the GPU backend, the CPU worker pool, batch folding and the comparison all run in a dedicated engine worker.
+    - The page only posts the model and receives compact snapshots (per cell: mean, SD, the value of a deterministic cell, and the histogram), so it never blocks during a run. Measured: no main-thread long tasks during a 1-billion-iteration GPU run alongside a 100-million-iteration CPU run.
+    - The page's bundle emits the CPU worker script and passes its URL to the engine worker, because a worker's own bundle can't emit a nested worker.
+  - **Fast feedback after an edit:**
+    - Raw batches start at 8,192 iterations and double, so first results come quickly.
+    - The edited cell shows the typed value immediately.
+    - Until the primary engine reports, the grid shows the secondary engine's results.
+  - **CPU workers summarize their own batches** after the raw phase, returning per-cell summaries instead of samples.
 - **Memory at GPU speeds (proposed, after the GPU prototype §6.6):** if storing every raw sample becomes too costly, keep raw samples up to a limit, and after that only running summaries: a histogram, moments, and a quantile sketch such as t-digest.
 - **Pause and resume:** the user can pause and resume sampling. This helps with large models or when saving battery.
 - **Random seed:** optional, for reproducible results.
@@ -576,8 +585,19 @@ This is a **priority**. A **GPU prototype** should be built early, before the CP
 5. **Time series and lookup tables:** time-series worksheets and lookup ranges are uploaded as read-only storage buffers. Time-series structured references (§5.3), `INDEX` and `MATCH` become indexed reads or binary searches in the shader.
 6. **Output:**
    - Each thread writes the values of the uncertain cells being watched to a storage buffer, laid out as `[cell][iteration]`.
-   - **Reductions on the GPU (proposed):** a second compute pass calculates histograms, moments (mean, variance) and approximate percentiles on the GPU. Only small summaries come back to the CPU. This keeps "always simulating" (§6.3) cheap even at millions of samples.
-7. **Recompile on edit:** when the user edits a formula, the kernel is regenerated and recompiled. Editing only constants or distribution parameters should update uniforms, **without** recompiling.
+   - **Reductions on the GPU (implemented for moments):**
+     - A summary kernel runs 64 iterations per thread. Each thread keeps, per output, a running count, mean and M2 (Welford), plus NaN and infinity counts, detected from the float's bits.
+     - A merge kernel then combines every thread's partials per output, using Chan's parallel formula and a tree reduction in workgroup memory.
+     - Only outputs × 5 floats are read back per batch, of up to 4,194,304 iterations. The next batch is queued before the current one is read, so the GPU stays busy.
+     - The host merges batches in f64.
+     - Raw samples are read back only for the first 262,144 iterations, which feed the histograms and the CPU–GPU comparison.
+     - **Measured:** 10,000,000 iterations of a 70-output model in about 0.6 s, against about 17 s when every sample was read back.
+     - Histograms and percentiles on the GPU are later steps.
+7. **Recompile only on structural edits (implemented):**
+   - Constants are read from a storage buffer (`consts`), not written into the WGSL.
+   - Compiled pipelines are cached by their shader source (the 16 most recent).
+   - Editing a value, such as an input or a distribution parameter written as a number, reuses the compiled pipelines. Measured: about 15–100 ms per batch, against 0.8 s + 2.8 s to recompile.
+   - Only formula edits compile a new pipeline, and meanwhile the CPU's results are shown.
 
 #### Known constraints to investigate
 

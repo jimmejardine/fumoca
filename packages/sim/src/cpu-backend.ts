@@ -1,9 +1,20 @@
-import type { Backend, Program, RunOptions } from "@fumoca/engine";
+import {
+  type Backend,
+  type BatchSummary,
+  mergeSummaries,
+  type Program,
+  type RunOptions,
+} from "@fumoca/engine";
 import { PROGRAM_CACHE_SIZE, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 export interface CpuBackendOptions {
   /** Number of workers. Defaults to all cores but one (SPECS.md §6.4). */
   workers?: number;
+  /**
+   * URL of the bundled CPU worker script (`@fumoca/sim/worker`). Needed when the backend is
+   * created inside another worker, whose bundle can't emit a nested worker by itself.
+   */
+  workerUrl?: string | URL;
 }
 
 /** All cores but one, so the main thread stays responsive (SPECS.md §6.4). */
@@ -13,9 +24,12 @@ export function defaultWorkerCount(): number {
 }
 
 interface Pending {
-  resolve: (samples: Map<string, Float64Array>) => void;
+  resolve: (response: WorkerResponse) => void;
   reject: (error: Error) => void;
 }
+
+/** Iterations per worker in a summary batch: nothing is transferred, so batches can be larger. */
+const SUMMARY_ITERATIONS_PER_WORKER = 5_000;
 
 /** Splits `count` iterations into up to `parts` contiguous, non-empty blocks of near-equal size. */
 export function splitIterations(count: number, parts: number): { start: number; count: number }[] {
@@ -56,7 +70,9 @@ export class CpuBackend implements Backend {
     }
     this.workerCount = count;
     this.workers = Array.from({ length: count }, () => {
-      const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+      const worker = options.workerUrl
+        ? new Worker(options.workerUrl, { type: "module" })
+        : new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
       worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.settle(event.data);
       worker.onerror = (event) => this.failAll(new Error(`CPU worker failed: ${event.message}`));
       return worker;
@@ -68,13 +84,19 @@ export class CpuBackend implements Backend {
     const programId = this.sendProgram(program);
     const blocks = splitIterations(options.count, this.workerCount);
     const parts = await Promise.all(
-      blocks.map((block, w) =>
-        this.request(w, programId, {
-          ...options,
-          iterationStart: options.iterationStart + block.start,
-          count: block.count,
-        }),
-      ),
+      blocks.map(async (block, w) => {
+        const response = await this.request(w, {
+          type: "run",
+          id: this.nextId++,
+          programId,
+          options: {
+            ...options,
+            iterationStart: options.iterationStart + block.start,
+            count: block.count,
+          },
+        });
+        return "samples" in response ? response.samples : new Map<string, Float64Array>();
+      }),
     );
 
     return new Map(
@@ -87,6 +109,43 @@ export class CpuBackend implements Backend {
         });
         return [address, merged];
       }),
+    );
+  }
+
+  /** The largest `runSummary` batch: a fixed number of iterations per worker. */
+  maxSummaryBatch(): number {
+    return SUMMARY_ITERATIONS_PER_WORKER * this.workerCount;
+  }
+
+  /**
+   * Evaluates iterations and reduces them inside the workers: each worker returns only per-output
+   * summaries of its block, which are merged here. Nothing large crosses to this thread.
+   */
+  async runSummary(program: Program, options: RunOptions): Promise<Map<string, BatchSummary>> {
+    if (this.disposed) throw new Error("CpuBackend has been disposed");
+    const programId = this.sendProgram(program);
+    const blocks = splitIterations(options.count, this.workerCount);
+    const parts = await Promise.all(
+      blocks.map(async (block, w) => {
+        const response = await this.request(w, {
+          type: "runSummary",
+          id: this.nextId++,
+          programId,
+          options: {
+            ...options,
+            iterationStart: options.iterationStart + block.start,
+            count: block.count,
+          },
+        });
+        return "summaries" in response ? response.summaries : new Map<string, BatchSummary>();
+      }),
+    );
+    const empty: BatchSummary = { count: 0, mean: 0, m2: 0, nanCount: 0, infiniteCount: 0 };
+    return new Map(
+      options.outputs.map((output) => [
+        output,
+        parts.reduce((merged, part) => mergeSummaries(merged, part.get(output) ?? empty), empty),
+      ]),
     );
   }
 
@@ -114,15 +173,12 @@ export class CpuBackend implements Backend {
 
   private request(
     workerIndex: number,
-    programId: number,
-    options: RunOptions,
-  ): Promise<Map<string, Float64Array>> {
+    request: WorkerRequest & { id: number },
+  ): Promise<WorkerResponse> {
     const worker = this.workers[workerIndex];
     if (!worker) return Promise.reject(new Error(`No worker ${workerIndex}`));
-    const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      const request: WorkerRequest = { type: "run", id, programId, options };
+      this.pending.set(request.id, { resolve, reject });
       worker.postMessage(request);
     });
   }
@@ -132,7 +188,7 @@ export class CpuBackend implements Backend {
     if (!pending) return;
     this.pending.delete(response.id);
     if ("error" in response) pending.reject(new Error(response.error));
-    else pending.resolve(response.samples);
+    else pending.resolve(response);
   }
 
   private failAll(error: Error): void {

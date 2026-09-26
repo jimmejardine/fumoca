@@ -1,4 +1,4 @@
-import { evaluateCpu, type Program } from "@fumoca/engine";
+import { evaluateCpu, type Program, summarizeBatch } from "@fumoca/engine";
 import { PROGRAM_CACHE_SIZE, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 /** The parts of a dedicated worker's global scope this module uses. */
@@ -28,6 +28,14 @@ scope.onmessage = ({ data: request }) => {
     const program = programs.get(programId);
     if (!program) throw new Error(`Worker has no program ${programId}`);
     const samples = evaluateCpu(program, options);
+    if (request.type === "runSummary") {
+      // Reduce here, so only a few numbers per output go back.
+      const summaries = new Map(
+        [...samples].map(([output, values]) => [output, summarizeBatch(values)]),
+      );
+      scope.postMessage({ id, summaries }, []);
+      return;
+    }
     // Transfer the sample buffers rather than copying them (SPECS.md §6.4).
     const buffers = [...samples.values()].map((array) => array.buffer);
     scope.postMessage({ id, samples }, buffers);

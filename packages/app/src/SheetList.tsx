@@ -1,6 +1,6 @@
 import type { Sheet } from "@fumoca/storage";
 import { NavLink, ScrollArea, Text } from "@mantine/core";
-import { IconTable } from "@tabler/icons-react";
+import { IconTable, IconTimeline } from "@tabler/icons-react";
 
 export interface SheetListProps {
   sheets: Sheet[];
@@ -8,7 +8,10 @@ export interface SheetListProps {
   onOpen: (sheetId: string) => void;
 }
 
-/** The model's sheets. Clicking one opens it as a tab, or brings its tab to the front. */
+/**
+ * The model's sheets. Clicking one opens it as a tab, or brings its tab to the front. Series
+ * sheets get the same icon as Model → New series sheet.
+ */
 export function SheetList({ sheets, activeSheetId, onOpen }: SheetListProps) {
   return (
     <>
@@ -22,7 +25,7 @@ export function SheetList({ sheets, activeSheetId, onOpen }: SheetListProps) {
               key={sheet.id}
               component="button"
               label={sheet.name}
-              leftSection={<IconTable size={16} />}
+              leftSection={sheet.series ? <IconTimeline size={16} /> : <IconTable size={16} />}
               active={sheet.id === activeSheetId}
               onClick={() => onOpen(sheet.id)}
             />

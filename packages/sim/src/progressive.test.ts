@@ -1,7 +1,18 @@
-import { type Backend, compile, evaluateCpu, type RunOptions } from "@fumoca/engine";
+import {
+  type Backend,
+  compile,
+  evaluateCpu,
+  type RunOptions,
+  summarizeBatch,
+} from "@fumoca/engine";
 import { describe, expect, it } from "vitest";
 import { CpuBackend } from "./cpu-backend";
-import { type ProgressState, RunAbortedError, runProgressively } from "./progressive";
+import {
+  type ProgressState,
+  RAW_ITERATIONS,
+  RunAbortedError,
+  runProgressively,
+} from "./progressive";
 
 const PROGRAM = compile({ A1: "=NORMAL(100, 10)", A2: "=A1 * 2", A3: 5 });
 const OUTPUTS = ["A1", "A2", "A3"];
@@ -154,5 +165,123 @@ describe("runProgressively", () => {
     } finally {
       backend.dispose();
     }
+  });
+
+  it("switches a summarizing backend to summaries after the raw iterations", async () => {
+    const calls: { kind: string; start: number; count: number }[] = [];
+    const backend: Backend = {
+      name: "summarizing",
+      run: async (program, options) => {
+        calls.push({ kind: "raw", start: options.iterationStart, count: options.count });
+        return evaluateCpu(program, options);
+      },
+      runSummary: async (program, options) => {
+        calls.push({ kind: "summary", start: options.iterationStart, count: options.count });
+        const samples = evaluateCpu(program, options);
+        return new Map([...samples].map(([output, values]) => [output, summarizeBatch(values)]));
+      },
+      dispose: () => {},
+    };
+    const total = RAW_ITERATIONS + 300_000;
+    const final = await runProgressively(
+      PROGRAM,
+      {
+        outputs: OUTPUTS,
+        seed: 4,
+        primary: { backend, total, batch: 100_000, summaryBatch: 120_000 },
+      },
+      () => {},
+    );
+    // Raw batches start small and double up to the batch size, so first results come quickly.
+    expect(calls).toEqual([
+      { kind: "raw", start: 0, count: 8_192 },
+      { kind: "raw", start: 8_192, count: 16_384 },
+      { kind: "raw", start: 24_576, count: 32_768 },
+      { kind: "raw", start: 57_344, count: 65_536 },
+      { kind: "raw", start: 122_880, count: 100_000 },
+      { kind: "raw", start: 222_880, count: RAW_ITERATIONS - 222_880 },
+      { kind: "summary", start: RAW_ITERATIONS, count: 120_000 },
+      { kind: "summary", start: RAW_ITERATIONS + 120_000, count: 120_000 },
+      { kind: "summary", start: RAW_ITERATIONS + 240_000, count: 60_000 },
+    ]);
+    // Same statistics as one run over every iteration; the histogram covers the raw samples.
+    const all = evaluateCpu(PROGRAM, { seed: 4, iterationStart: 0, count: total, outputs: ["A2"] });
+    const reference = summarizeBatch(all.get("A2") ?? []);
+    const a2 = final.primary.accumulators.get("A2");
+    expect(a2?.count).toBe(total);
+    expect(a2?.mean).toBeCloseTo(reference.mean, 9);
+    expect(a2?.sd).toBeCloseTo(Math.sqrt(reference.m2 / (total - 1)), 9);
+    expect(a2?.histogram.total).toBe(RAW_ITERATIONS);
+    expect(final.primary.accumulators.get("A3")?.first).toBe(5);
+  });
+
+  it("stops queuing summary batches when aborted", async () => {
+    let summaries = 0;
+    const controller = new AbortController();
+    const backend: Backend = {
+      name: "summarizing",
+      run: async (program, options) => evaluateCpu(program, options),
+      runSummary: async (program, options) => {
+        summaries++;
+        const samples = evaluateCpu(program, { ...options, count: 10 });
+        return new Map([...samples].map(([output, values]) => [output, summarizeBatch(values)]));
+      },
+      dispose: () => {},
+    };
+    const run = runProgressively(
+      PROGRAM,
+      {
+        outputs: OUTPUTS,
+        seed: 1,
+        primary: { backend, total: 1_000_000_000, batch: RAW_ITERATIONS, summaryBatch: 1_000 },
+        throttleMs: 0,
+        signal: controller.signal,
+      },
+      (state) => {
+        if (state.primary.done > RAW_ITERATIONS + 5_000) controller.abort();
+      },
+    );
+    await expect(run).rejects.toThrow(RunAbortedError);
+    expect(summaries).toBeLessThan(20);
+  });
+
+  it("keeps running raw batches while the summary path is still being prepared", async () => {
+    const calls: string[] = [];
+    let ready: () => void = () => {};
+    const preparing = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const backend: Backend = {
+      name: "compiling",
+      run: async (program, options) => {
+        calls.push("raw");
+        // The summary path becomes ready once well past the usual raw iterations.
+        if (options.iterationStart >= RAW_ITERATIONS * 2) ready();
+        return evaluateCpu(program, options);
+      },
+      runSummary: async (program, options) => {
+        calls.push("summary");
+        const samples = evaluateCpu(program, options);
+        return new Map([...samples].map(([output, values]) => [output, summarizeBatch(values)]));
+      },
+      prepare: () => preparing,
+      dispose: () => {},
+    };
+    const total = RAW_ITERATIONS * 4;
+    const final = await runProgressively(
+      PROGRAM,
+      {
+        outputs: OUTPUTS,
+        seed: 1,
+        primary: { backend, total, batch: 65_536, summaryBatch: 100_000 },
+      },
+      () => {},
+    );
+    expect(final.primary.done).toBe(total);
+    const firstSummary = calls.indexOf("summary");
+    expect(firstSummary).toBeGreaterThan(0);
+    expect(calls.slice(firstSummary).every((c) => c === "summary")).toBe(true);
+    // More raw iterations than usual ran while it was preparing.
+    expect(final.primary.accumulators.get("A1")?.histogram.total).toBeGreaterThan(RAW_ITERATIONS);
   });
 });

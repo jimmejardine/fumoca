@@ -4,9 +4,9 @@
  * This package must stay free of DOM and UI dependencies (its tsconfig has no DOM lib).
  */
 
-export { CellAccumulator } from "./accumulator";
+export { CellAccumulator, mergeSummaries, summarizeBatch } from "./accumulator";
 export { uncertainCells } from "./analysis";
-export type { Backend, Samples } from "./backend";
+export type { Backend, BatchSummary, Samples } from "./backend";
 export {
   type CellError,
   type CellInputs,

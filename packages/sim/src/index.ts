@@ -9,9 +9,11 @@ export {
   type ComparisonProgress,
   type EngineProgress,
   type EngineSpec,
+  FIRST_BATCH,
   MAX_COMPARED,
   type ProgressiveOptions,
   type ProgressState,
+  RAW_ITERATIONS,
   RunAbortedError,
   runProgressively,
 } from "./progressive";

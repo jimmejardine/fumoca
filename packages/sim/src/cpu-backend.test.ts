@@ -1,4 +1,4 @@
-import { compile, evaluateCpu, type RunOptions } from "@fumoca/engine";
+import { compile, evaluateCpu, type RunOptions, summarizeBatch } from "@fumoca/engine";
 import { afterEach, describe, expect, it } from "vitest";
 import { CpuBackend, splitIterations } from "./cpu-backend";
 
@@ -69,6 +69,26 @@ describe("CpuBackend", () => {
     const first = programs[0];
     if (!first) throw new Error("no program");
     expect(await backend.run(first, options)).toEqual(evaluateCpu(first, options));
+  });
+
+  it("summarizes inside the workers, matching a single-threaded summary", async () => {
+    backend = new CpuBackend({ workers: 3 });
+    const options: RunOptions = {
+      seed: 8,
+      iterationStart: 11,
+      count: 20_003,
+      outputs: ["A1", "B1"],
+    };
+    const summaries = await backend.runSummary(MODEL, options);
+    const reference = evaluateCpu(MODEL, options);
+    for (const output of options.outputs) {
+      const expected = summarizeBatch(reference.get(output) ?? []);
+      const actual = summaries.get(output);
+      expect(actual?.count).toBe(expected.count);
+      expect(actual?.mean).toBeCloseTo(expected.mean, 9);
+      expect(actual?.m2).toBeCloseTo(expected.m2, 3);
+    }
+    expect(backend.maxSummaryBatch()).toBe(15_000);
   });
 
   it("reports errors from workers", async () => {

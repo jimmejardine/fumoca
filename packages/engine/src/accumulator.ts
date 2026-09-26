@@ -1,3 +1,4 @@
+import type { BatchSummary } from "./backend";
 import { StreamingHistogram } from "./histogram";
 
 /**
@@ -52,6 +53,28 @@ export class CellAccumulator {
     return this.infinite;
   }
 
+  /**
+   * Folds in a batch's summary statistics (from a backend that reduces on the device). The
+   * histogram only grows from raw batches, so it reflects the samples that were read back.
+   */
+  addSummary(summary: BatchSummary): void {
+    const batchSize = summary.count + summary.nanCount + summary.infiniteCount;
+    if (batchSize === 0) return;
+    // A deterministic cell has the same value in every iteration, so its mean is that value.
+    if (this.n === 0) this.firstValue = summary.count > 0 ? summary.mean : Number.NaN;
+    if (summary.nanCount > 0) this.nan = true;
+    if (summary.infiniteCount > 0) this.infinite = true;
+    if (summary.count > 0) {
+      const before = this.finiteCount;
+      const total = before + summary.count;
+      const delta = summary.mean - this.runningMean;
+      this.runningMean += (delta * summary.count) / total;
+      this.m2 += summary.m2 + (delta * delta * before * summary.count) / total;
+      this.finiteCount = total;
+    }
+    this.n += batchSize;
+  }
+
   /** Folds in `samples[from, to)`. */
   add(samples: ArrayLike<number>, from = 0, to = samples.length): void {
     if (to <= from) return;
@@ -100,4 +123,45 @@ function sliceOf(samples: ArrayLike<number>, from: number, to: number): ArrayLik
     return samples.subarray(from, to);
   }
   return Array.prototype.slice.call(samples, from, to) as number[];
+}
+
+/** Summary statistics of `samples[from, to)`: the host-side reference for device reductions. */
+export function summarizeBatch(
+  samples: ArrayLike<number>,
+  from = 0,
+  to = samples.length,
+): BatchSummary {
+  let count = 0;
+  let mean = 0;
+  let m2 = 0;
+  let nanCount = 0;
+  let infiniteCount = 0;
+  for (let i = from; i < to; i++) {
+    const x = samples[i] as number;
+    if (Number.isNaN(x)) nanCount++;
+    else if (!Number.isFinite(x)) infiniteCount++;
+    else {
+      count++;
+      const delta = x - mean;
+      mean += delta / count;
+      m2 += delta * (x - mean);
+    }
+  }
+  return { count, mean, m2, nanCount, infiniteCount };
+}
+
+/** Merges two batch summaries (Chan et al.), as if their samples had been summarized together. */
+export function mergeSummaries(a: BatchSummary, b: BatchSummary): BatchSummary {
+  const count = a.count + b.count;
+  const nanCount = a.nanCount + b.nanCount;
+  const infiniteCount = a.infiniteCount + b.infiniteCount;
+  if (count === 0) return { count, mean: 0, m2: 0, nanCount, infiniteCount };
+  const delta = b.mean - a.mean;
+  return {
+    count,
+    mean: a.mean + (delta * b.count) / count,
+    m2: a.m2 + b.m2 + (delta * delta * a.count * b.count) / count,
+    nanCount,
+    infiniteCount,
+  };
 }

@@ -1,6 +1,4 @@
 import { FormulaSyntaxError, parseFormula } from "@fumoca/engine";
-import { GpuBackend } from "@fumoca/gpu";
-import { CpuBackend } from "@fumoca/sim";
 import {
   addSeriesColumn,
   addSheet,
@@ -22,6 +20,7 @@ import { notifications } from "@mantine/notifications";
 import type { DockviewApi } from "dockview-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCellInput, parseCellInput } from "./cellInput";
+import { EngineClient } from "./engine/client";
 import {
   DEFAULT_SETTINGS,
   type EngineSettings,
@@ -31,12 +30,7 @@ import {
 import { FormulaBar } from "./FormulaBar";
 import { openTextFile, saveTextFile, type WorkbookFile } from "./files";
 import { MenuBar } from "./MenuBar";
-import {
-  type Engines,
-  type Recalculation,
-  startRecalculation,
-  type WorkbookResults,
-} from "./recalc";
+import type { Recalculation, WorkbookResults } from "./recalc";
 import { openSheet, SheetArea, SheetAreaContext, showWorkbook } from "./SheetArea";
 import { type CellEdit, focusCellBelow } from "./SheetGrid";
 import { SheetList } from "./SheetList";
@@ -74,9 +68,6 @@ function showError(title: string, error: unknown): void {
 }
 
 const runs = (count: number) => count.toLocaleString("en-US");
-
-/** CPU iterations per worker in each batch: small enough that updates come often. */
-const CPU_BATCH_PER_WORKER = 1_000;
 
 /**
  * The status line for a recalculation: progress while it runs (`GPU 350,000 / 1,000,000`), then
@@ -139,9 +130,9 @@ function syntaxError(text: string): string | null {
 export function App() {
   const [doc, setDoc] = useState<Document>(() => untitled(createWorkbook()));
   const [settings, setSettings] = useState<EngineSettings>(() => loadSettings());
-  // undefined while WebGPU is being detected; null if it isn't available.
-  const [gpu, setGpu] = useState<GpuBackend | null | undefined>(undefined);
-  const [cpu, setCpu] = useState<CpuBackend | null>(null);
+  const [engine, setEngine] = useState<EngineClient | null>(null);
+  // undefined while the engine worker starts; then whether WebGPU is available to it.
+  const [gpuAvailable, setGpuAvailable] = useState<boolean | undefined>(undefined);
   const [results, setResults] = useState<WorkbookResults>(new Map());
   const [status, setStatus] = useState("Starting…");
   const [statusDetail, setStatusDetail] = useState<string | undefined>(undefined);
@@ -155,81 +146,55 @@ export function App() {
     document.title = `${doc.title}${doc.dirty ? " •" : ""} — fumoca`;
   }, [doc.title, doc.dirty]);
 
-  // Detect WebGPU once. The GPU backend lives for the whole session.
+  // The engine runs in its own worker for the whole session (SPECS.md §6.4), so the page stays
+  // responsive while it calculates.
   useEffect(() => {
-    let cancelled = false;
-    let created: GpuBackend | null = null;
-    void GpuBackend.create()
-      .catch(() => null)
-      .then((backend) => {
-        created = backend;
-        if (cancelled) backend?.dispose();
-        else setGpu(backend);
-      });
+    const client = new EngineClient();
+    setEngine(client);
+    let disposed = false;
+    void client.ready.then(({ gpuAvailable: available }) => {
+      if (!disposed) setGpuAvailable(available);
+    });
     return () => {
-      cancelled = true;
-      created?.dispose();
+      disposed = true;
+      client.dispose();
     };
   }, []);
 
   // What actually runs: without WebGPU the GPU is off, and the CPU must run (SPECS.md §6.7).
   const effective = useMemo<EngineSettings | null>(() => {
-    if (gpu === undefined) return null;
-    if (gpu) return settings;
+    if (gpuAvailable === undefined) return null;
+    if (gpuAvailable) return settings;
     return {
       gpuIterations: 0,
       cpuIterations: settings.cpuIterations || DEFAULT_SETTINGS.cpuIterations,
     };
-  }, [gpu, settings]);
+  }, [gpuAvailable, settings]);
 
-  // The CPU worker pool exists only while CPU iterations are enabled.
-  const cpuEnabled = (effective?.cpuIterations ?? 0) > 0;
-  useEffect(() => {
-    if (!cpuEnabled) return;
-    const backend = new CpuBackend();
-    setCpu(backend);
-    return () => {
-      backend.dispose();
-      setCpu(null);
-    };
-  }, [cpuEnabled]);
-
-  // Recalculate whenever the model or engines change. The run goes in batches, and the grid
+  // Recalculate whenever the model or settings change. The run goes in batches, and the grid
   // updates as they arrive (SPECS.md §6.3); a newer run cancels the one before.
   useEffect(() => {
-    if (!effective) return;
-    const gpuRun =
-      gpu && effective.gpuIterations > 0
-        ? { backend: gpu, count: effective.gpuIterations, f32: true }
-        : null;
-    const cpuRun =
-      cpu && effective.cpuIterations > 0
-        ? {
-            backend: cpu,
-            count: effective.cpuIterations,
-            batch: CPU_BATCH_PER_WORKER * cpu.workerCount,
-          }
-        : null;
-    const primary = gpuRun ?? cpuRun;
-    if (!primary) return; // The CPU pool is still starting.
-    const engines: Engines =
-      gpuRun && cpuRun ? { primary: gpuRun, secondary: cpuRun } : { primary };
-
+    if (!engine || !effective) return;
     setStatus("Calculating…");
     setStatusDetail(undefined);
     const workbook = doc.workbook;
-    const running = startRecalculation(workbook, engines, { seed: SEED }, (update) => {
-      setResults(update.results);
-      const { status: text, detail } = describeStatus(update, workbook, Boolean(gpuRun));
-      setStatus(text);
-      setStatusDetail(detail);
-    });
-    running.done.catch((error: unknown) => {
-      setStatus("Calculation failed");
-      showError("Calculation failed", error);
-    });
-    return () => running.cancel();
-  }, [doc.workbook, effective, gpu, cpu]);
+    const run = engine.run(
+      workbook,
+      effective,
+      SEED,
+      ({ recalculation, primaryIsGpu }) => {
+        setResults(recalculation.results);
+        const { status: text, detail } = describeStatus(recalculation, workbook, primaryIsGpu);
+        setStatus(text);
+        setStatusDetail(detail);
+      },
+      (message) => {
+        setStatus("Calculation failed");
+        showError("Calculation failed", new Error(message));
+      },
+    );
+    return () => run.cancel();
+  }, [doc.workbook, effective, engine]);
 
   const handleApplySettings = useCallback((next: EngineSettings) => {
     setSettings(next);
@@ -327,6 +292,17 @@ export function App() {
       ),
       dirty: true,
     }));
+    // Show what was typed straight away: the edited cells drop their stale results (the grid then
+    // shows their input) until the new run reports.
+    setResults((current) => {
+      const sheetResults = current.get(sheetId);
+      if (!sheetResults) return current;
+      const next = new Map(current);
+      const trimmed = new Map(sheetResults);
+      for (const { address } of changed) trimmed.delete(address);
+      next.set(sheetId, trimmed);
+      return next;
+    });
     return null;
   }, []);
 
@@ -415,7 +391,7 @@ export function App() {
     <AppShell header={{ height: HEADER_HEIGHT }} navbar={{ width: 200, breakpoint: 0 }} padding={0}>
       <AppShell.Header>
         <MenuBar
-          config={{ settings, gpuAvailable: Boolean(gpu), onApply: handleApplySettings }}
+          config={{ settings, gpuAvailable: gpuAvailable === true, onApply: handleApplySettings }}
           title={doc.title}
           dirty={doc.dirty}
           onNew={handleNew}
