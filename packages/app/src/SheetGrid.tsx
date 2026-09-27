@@ -10,6 +10,8 @@ import {
 } from "@revolist/react-datagrid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatCellInput } from "./cellInput";
+import { referenceColors } from "./dependencyColors";
+import { FormulaInput } from "./FormulaInput";
 import { type CellResult, formatResult } from "./recalc";
 import classes from "./SheetGrid.module.css";
 
@@ -74,13 +76,16 @@ export function cellPosition(address: string): { x: number; y: number } | null {
 function cellProperties({ model, prop }: CellTemplateProp) {
   const meta = model[metaKey(String(prop))] as CellMeta | undefined;
   const invalidRow = model[INVALID_KEY] === true;
-  if (!meta) return invalidRow ? { class: classes.invalidRow ?? "" } : undefined;
+  // The cell's address, so dependency borders find it whatever rows a filter hides.
+  const address = { "data-address": addressOf(prop, model as Row) };
+  if (!meta) return invalidRow ? { ...address, class: classes.invalidRow ?? "" } : address;
   const names = [
     classes[meta.kind],
     meta.root ? classes.root : undefined,
     invalidRow ? classes.invalidRow : undefined,
   ].filter(Boolean);
   return {
+    ...address,
     class: names.join(" "),
     ...(meta.message ? { title: meta.message } : {}),
     ...(meta.background
@@ -138,13 +143,12 @@ function FormulaEditor({ column, save, close, val }: EditorType) {
     await grid.setCellsFocus(above, above);
   };
   return (
-    <input
+    <FormulaInput
       className={classes.editor}
       aria-label="Cell editor"
-      // biome-ignore lint/a11y/noAutofocus: the editor opens because the user asked to edit
       autoFocus
       value={text}
-      onChange={(event) => setText(event.target.value)}
+      onChange={setText}
       onBlur={() => finish(true)}
       onKeyDown={(event) => {
         event.stopPropagation();
@@ -204,6 +208,22 @@ export function SheetGrid({
   const colorScheme = useComputedColorScheme("light");
   const gridRef = useRef<HTMLRevoGridElement>(null);
   const [filtered, setFiltered] = useState(false);
+  const [focused, setFocused] = useState<string | null>(null);
+
+  // Dependency borders (SPECS.md §6.5): each cell the focused cell's formula references gets an
+  // outline in its colour, the same colour as its name in the formula. A style rule per cell,
+  // matched by address, so moving the selection doesn't re-render the grid's rows.
+  const focusedInput = focused ? sheet.cells[focused] : undefined;
+  const dependencyStyles = useMemo(() => {
+    if (typeof focusedInput !== "string") return "";
+    const scope = `[data-sheet="${CSS.escape(sheet.id)}"]`;
+    return [...referenceColors(focusedInput, colorScheme)]
+      .map(
+        ([address, color]) =>
+          `${scope} .rgCell[data-address="${address}"] { outline: 2px solid ${color}; outline-offset: -2px; }`,
+      )
+      .join("\n");
+  }, [focusedInput, colorScheme, sheet.id]);
 
   // Series sheets show only the time column and their value columns, headed by name (SPECS.md §5).
   const seriesColumns = sheet.series?.columns;
@@ -339,7 +359,8 @@ export function SheetGrid({
   };
 
   return (
-    <div className={classes.wrapper}>
+    <div className={classes.wrapper} data-sheet={sheet.id}>
+      {dependencyStyles && <style>{dependencyStyles}</style>}
       <RevoGrid
         ref={gridRef}
         columns={columns}
@@ -354,7 +375,10 @@ export function SheetGrid({
         }}
         onAfterfocus={(event) => {
           const { model, column } = event.detail;
-          if (model && column) onSelect(addressOf(column.prop, model as Row));
+          if (!model || !column) return;
+          const address = addressOf(column.prop, model as Row);
+          setFocused(address);
+          onSelect(address);
         }}
         onBeforeedit={(event) => {
           // The workbook owns cell contents: apply the edit there and let the grid re-render.

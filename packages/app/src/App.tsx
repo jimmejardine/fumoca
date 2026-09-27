@@ -1,4 +1,4 @@
-import { FormulaSyntaxError, granularityOf, normalizePeriod, parseFormula } from "@fumoca/engine";
+import { granularityOf, normalizePeriod } from "@fumoca/engine";
 import {
   addSeriesColumn,
   addSheet,
@@ -118,18 +118,6 @@ function describeStatus(
     status: `${both} · ${differing.length} ${differing.length === 1 ? "cell differs" : "cells differ"}`,
     detail: `CPU and GPU differ in: ${cells}`,
   };
-}
-
-/** Returns an error message if the text is a formula with a syntax error. */
-function syntaxError(text: string): string | null {
-  const value = parseCellInput(text);
-  if (typeof value !== "string" || !value.startsWith("=")) return null;
-  try {
-    parseFormula(value);
-    return null;
-  } catch (error) {
-    return error instanceof FormulaSyntaxError ? error.message : String(error);
-  }
 }
 
 export function App() {
@@ -288,8 +276,9 @@ export function App() {
   }, []);
 
   /**
-   * Commits edits to a sheet. Rejects the whole commit if any formula has a syntax error (as
-   * Excel does), returning the error message. Unchanged cells are ignored.
+   * Commits edits to a sheet. Unchanged cells are ignored. A formula with a syntax error is
+   * committed as typed, so it can be fixed rather than retyped; the cell shows #ERROR! with the
+   * reason in its tooltip.
    */
   const handleCommit = useCallback((sheetId: string, typed: CellEdit[]): string | null => {
     // In a series sheet's time column, loosely typed periods are written properly (2026-7 →
@@ -300,10 +289,6 @@ export function App() {
           /^A[0-9]+$/.test(edit.address) ? { ...edit, text: normalizePeriod(edit.text) } : edit,
         )
       : typed;
-    for (const { address, text } of edits) {
-      const error = syntaxError(text);
-      if (error) return edits.length === 1 ? error : `${address}: ${error}`;
-    }
     const sheet = docRef.current.workbook.sheets.find((s) => s.id === sheetId);
     const changed = edits.filter(({ address, text }) => {
       const previous = sheet?.cells[address];

@@ -58,7 +58,7 @@ This document holds the detailed specifications for fumoca. For a high-level ove
   - F2 and double-click show the cell's raw formula or value; typing starts a new entry.
   - Enter commits and Escape cancels.
   - Arrow Down commits like Enter and moves down; Arrow Up commits and moves up.
-- **Syntax errors are rejected:** a formula with a syntax error isn't committed, as in Excel. The formula bar shows the error, or a notification appears for in-grid edits, and the cell keeps its previous contents.
+- **Syntax errors are kept:** a formula with a syntax error is committed as typed, unlike Excel, so it can be fixed rather than retyped. The cell shows `#ERROR!` with the reason in its tooltip, and cells that refer to it show errors too.
 - Standard spreadsheet behaviour is expected:
   - Select cells, move with the keyboard, edit in place and in a formula bar
   - Copy and paste, with relative and absolute (`$A$1`) references adjusted
@@ -511,6 +511,10 @@ Every uncertain cell shows live results.
 - **Root cells are bold.** A root cell's contents refer to no other cell: a number, or a formula or distribution built only from constants, such as `100`, `=1+2` or `=NORMAL(100, 10)`.
   - Formula results, such as `=B1*2` or `=NORMAL(B1, 10)`, are normal weight.
   - So are text labels.
+- **Dependency highlighting:** when the selection is on a formula cell, each cell its formula references gets a thin (2px) coloured border. The formula bar and the in-cell editor show each reference in the same colour as its cell's border.
+  - **Colours:** a deterministic sequence around the colour wheel. The i-th distinct reference, in order of first appearance, has hue 0° + i × the golden angle (≈137.5°), so neighbouring colours are far apart and blue, the selection colour, comes late. They are darker on the light theme and lighter on the dark theme. A repeated reference keeps its colour.
+  - The editors colour references live as they're typed. The borders follow the committed formula.
+  - Series lookups into other sheets (`Prices[Close]@2026-10`) aren't highlighted; a lookup's time cell (`Prices@A5`) is.
 - **Deterministic numbers:** Excel "General" style (up to 10 significant digits, no thousands separators), right-aligned.
 - **In-cell histogram:** every uncertain cell's background shows a faint histogram of its samples. It's drawn as a stretched inline SVG and follows light/dark mode.
   - It uses a 64-bin **streaming histogram** (`StreamingHistogram`, `packages/engine/src/histogram.ts`), ready for continuous sampling:

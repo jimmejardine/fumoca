@@ -29,7 +29,7 @@ export class FormulaSyntaxError extends Error {
 
 type Token =
   | { kind: "number"; value: number }
-  | { kind: "ref"; address: string; text: string }
+  | { kind: "ref"; address: string; text: string; start: number }
   | { kind: "name"; name: string; text: string }
   | { kind: "sheet"; name: string }
   | { kind: "column"; name: string }
@@ -48,7 +48,8 @@ const COLUMN = /^\[([^\]]*)\]/;
 const PERIOD =
   /^(\d{4}-\d{2}-\d{2}T\d{2}|\d{4}-\d{2}-\d{2}|\d{4}-W\d{2}|\d{4}-Q[1-4]|\d{4}-\d{2}|\d{4})(?![\w.])/;
 
-function tokenize(text: string): Token[] {
+/** Splits formula text into tokens. Leniently, it stops at a bad character instead of throwing. */
+function tokenize(text: string, lenient = false): Token[] {
   const tokens: Token[] = [];
   let pos = 0;
   while (pos < text.length) {
@@ -82,7 +83,12 @@ function tokenize(text: string): Token[] {
     }
     const ref = CELL_REF.exec(rest);
     if (ref) {
-      tokens.push({ kind: "ref", address: `${ref[1]?.toUpperCase()}${ref[2]}`, text: ref[0] });
+      tokens.push({
+        kind: "ref",
+        address: `${ref[1]?.toUpperCase()}${ref[2]}`,
+        text: ref[0],
+        start: pos,
+      });
       pos += ref[0].length;
       continue;
     }
@@ -104,6 +110,7 @@ function tokenize(text: string): Token[] {
       pos += op.length;
       continue;
     }
+    if (lenient) break;
     throw new FormulaSyntaxError(`Unexpected character '${rest[0]}' at position ${pos}`);
   }
   tokens.push({ kind: "end" });
@@ -311,4 +318,31 @@ function describe(token: Token): string {
 export function parseFormula(text: string): Expr {
   const body = text.startsWith("=") ? text.slice(1) : text;
   return new Parser(tokenize(body)).parse();
+}
+
+/** A cell reference in formula text, with its span (offsets into the text as given). */
+export interface FormulaReference {
+  address: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * The cell references in formula text, in order, for highlighting a cell's dependencies. Works on
+ * partly typed formulas: it stops at a character it can't read. A name that looks like a cell but
+ * is a series lookup's sheet (`Q1[Rate]@2027`) isn't a reference; a lookup's time cell is.
+ * Text that isn't a formula (no leading "=") has no references.
+ */
+export function formulaReferences(text: string): FormulaReference[] {
+  if (!text.startsWith("=")) return [];
+  const tokens = tokenize(text.slice(1), true);
+  const references: FormulaReference[] = [];
+  tokens.forEach((token, i) => {
+    if (token.kind !== "ref") return;
+    const next = tokens[i + 1]?.kind;
+    if (next === "column" || next === "at") return;
+    const start = token.start + 1;
+    references.push({ address: token.address, start, end: start + token.text.length });
+  });
+  return references;
 }

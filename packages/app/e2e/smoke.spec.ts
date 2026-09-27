@@ -196,7 +196,7 @@ test("the formula bar shows and edits the selected cell", async ({ page }) => {
   await expect(page.getByLabel("Cell address")).toHaveValue("B2");
 });
 
-test("Escape reverts the formula bar, and syntax errors are rejected", async ({ page }) => {
+test("Escape reverts the formula bar, and syntax errors show as #ERROR!", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await tabs(page).filter({ hasText: "Deterministic" }).click();
   await cell(page, 1, 1).click();
@@ -205,11 +205,17 @@ test("Escape reverts the formula bar, and syntax errors are rejected", async ({ 
   await formulaBar(page).press("Escape");
   await expect(formulaBar(page)).toHaveValue("=B1 * 1.08 - 40");
 
-  await formulaBar(page).fill("=1+");
+  // A formula with a syntax error is kept as typed, so it can be fixed rather than retyped.
+  await formulaBar(page).fill("=B1 * 1.08 -");
   await formulaBar(page).press("Enter");
-  await expect(page.getByText("Unexpected end of formula")).toBeVisible();
+  await expect(cell(page, 1, 1)).toHaveText("#ERROR!");
+  await expect(cell(page, 1, 1)).toHaveAttribute("title", /Unexpected end of formula/);
+  await cell(page, 1, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B2");
+  await expect(formulaBar(page)).toHaveValue("=B1 * 1.08 -");
+  await formulaBar(page).fill("=B1 * 1.08 - 40");
+  await formulaBar(page).press("Enter");
   await expect(cell(page, 1, 1)).toHaveText("1310");
-  await expect(title(page)).toHaveText("Test model");
 });
 
 test("F2 edits the cell's formula in the grid", async ({ page }) => {
@@ -255,6 +261,50 @@ test("arrow up and down commit an in-cell edit and move", async ({ page }) => {
   await page.keyboard.press("ArrowUp");
   await expect(cell(page, 1, 1)).toHaveText("7");
   await expect(address).toHaveValue("B1");
+});
+
+test("a formula's dependencies get coloured borders, matching the formula's text", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await tabs(page).filter({ hasText: "Deterministic" }).click();
+  const outline = (row: number, col: number) =>
+    cell(page, row, col).evaluate((element) => {
+      const style = getComputedStyle(element);
+      return style.outlineStyle === "none" ? null : style.outlineColor;
+    });
+  const textColor = (label: string, address: string) =>
+    page
+      .getByLabel(label)
+      .locator("..")
+      .locator(`[data-reference="${address}"]`)
+      .first()
+      .evaluate((element) => getComputedStyle(element).color);
+
+  // B2 is =B1 * 1.08 - 40: B1 gets a border in the colour B1 has in the formula bar.
+  await cell(page, 1, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B2");
+  await expect.poll(() => outline(0, 1)).not.toBeNull();
+  expect(await outline(0, 1)).toBe(await textColor("Formula bar", "B1"));
+  expect(await outline(1, 1)).toBeNull();
+
+  // A cell holding a value depends on nothing.
+  await cell(page, 0, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B1");
+  await expect.poll(() => outline(0, 1)).toBeNull();
+
+  // References are coloured as they're typed, each in its own colour.
+  await formulaBar(page).fill("=B1 + A1 * B1");
+  const b1 = await textColor("Formula bar", "B1");
+  expect(await textColor("Formula bar", "A1")).not.toBe(b1);
+  await formulaBar(page).press("Escape");
+
+  // The in-cell editor colours them too.
+  await cell(page, 1, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B2");
+  await page.keyboard.press("F2");
+  await expect(page.getByLabel("Cell editor")).toHaveValue("=B1 * 1.08 - 40");
+  expect(await textColor("Cell editor", "B1")).toBe(await outline(0, 1));
 });
 
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {

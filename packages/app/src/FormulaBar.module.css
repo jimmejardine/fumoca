@@ -1,0 +1,39 @@
+/* The formula bar's input, drawn like Mantine's xs TextInput. */
+.field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.input {
+  --formula-input-padding: calc(var(--input-height-xs, 30px) / 3);
+  height: 30px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  background: var(--mantine-color-white);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+}
+
+:global([data-mantine-color-scheme="dark"]) .input {
+  background: var(--mantine-color-dark-6);
+}
+
+.input:focus-within {
+  border-color: var(--mantine-primary-color-filled);
+}
+
+.input[data-disabled] {
+  background: var(--mantine-color-disabled);
+}
+
+.field:has([aria-invalid="true"]) .input {
+  border-color: var(--mantine-color-error);
+}
+
+.error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 2px;
+}

@@ -1,0 +1,56 @@
+/*
+ * A formula input with coloured cell references: the input's text is transparent, over a mirror
+ * that draws the same text in colour. Both share the frame's font and horizontal padding.
+ */
+.frame {
+  --formula-input-padding: 6px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  min-width: 0;
+}
+
+.mirror,
+.input {
+  box-sizing: border-box;
+  padding: 0 var(--formula-input-padding);
+  font: inherit;
+  letter-spacing: inherit;
+  white-space: pre;
+}
+
+.mirror {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  color: var(--mantine-color-text);
+}
+
+.frame[data-disabled] .mirror {
+  color: var(--mantine-color-dimmed);
+}
+
+.input {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--mantine-color-text);
+}
+
+.input::selection {
+  color: transparent;
+  background: rgba(34, 139, 230, 0.3);
+}
+
+.input:disabled {
+  cursor: not-allowed;
+}

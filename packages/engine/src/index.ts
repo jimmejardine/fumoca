@@ -29,7 +29,9 @@ export type { BinaryFn, DistKind, Op, Program, Reg, UnaryFn } from "./ir";
 export {
   type BinaryOperator,
   type Expr,
+  type FormulaReference,
   FormulaSyntaxError,
+  formulaReferences,
   type LookupTime,
   parseFormula,
 } from "./parser";
