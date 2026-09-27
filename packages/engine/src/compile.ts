@@ -317,6 +317,8 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
       case "call":
         for (const arg of expr.args) collectDeps(arg, sheetIndex, into);
         break;
+      case "refError":
+        throw new CompileError("A reference moved off the grid when it was copied", "#REF!");
       case "number":
         break;
     }
@@ -364,6 +366,8 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         return readCell(lookupTargets.get(expr) ?? resolveRef(expr, sheetIndex), sheetIndex);
       case "lookup":
         return readCell(lookupTargets.get(expr) ?? "", sheetIndex);
+      case "refError":
+        throw new CompileError("A reference moved off the grid when it was copied", "#REF!");
       case "negate":
         return emit({ kind: "unary", fn: "neg", a: emitExpr(expr.operand, sheetIndex) });
       case "binary":

@@ -42,18 +42,18 @@ export function referenceColors(text: string, scheme: ColorScheme): Map<string, 
 }
 
 /**
- * The dependency borders to draw for a selected cell: for each sheet, by id, the colour of each of
- * its cells that the selected cell's formula references. References to other sheets are included,
- * so their borders show wherever those sheets are open. The first colour for a cell wins.
+ * The dependency borders to draw for a formula on a sheet (the selected cell's, or one being
+ * typed): for each sheet, by id, the colour of each of its cells that the formula references.
+ * References to other sheets are included, so their borders show wherever those sheets are open.
+ * The first colour for a cell wins.
  */
 export function dependencyHighlights(
   workbook: Workbook,
   sheetId: string,
-  address: string,
+  text: number | string | undefined,
   scheme: ColorScheme,
 ): Map<string, Map<string, string>> {
   const highlights = new Map<string, Map<string, string>>();
-  const text = workbook.sheets.find((s) => s.id === sheetId)?.cells[address];
   if (typeof text !== "string") return highlights;
   const colors = referenceColors(text, scheme);
   for (const reference of formulaReferences(text)) {

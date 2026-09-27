@@ -13,6 +13,7 @@ import {
   type Insertion,
   insertReference,
   type PointTarget,
+  publishDraft,
   setPointTarget,
 } from "./pointing";
 
@@ -110,15 +111,32 @@ export function FormulaInput({
         latest.current.onChange(inserted.value);
         return true;
       },
+      pointed: () => {
+        const last = lastInsertion.current;
+        const { value } = latest.current;
+        const caret = pendingCaret.current ?? input.selectionStart;
+        if (!last || last.value !== value || caret !== last.end) return null;
+        if (pendingCaret.current === null && input.selectionEnd !== last.end) return null;
+        return value.slice(last.start, last.end);
+      },
     };
     target.current = next;
     setPointTarget(next);
+    if (next.sheetId) publishDraft({ sheetId: next.sheetId, text: latest.current.value });
   };
   const unregister = () => {
-    if (target.current) clearPointTarget(target.current);
+    if (target.current) {
+      clearPointTarget(target.current);
+      publishDraft(null);
+    }
     target.current = null;
     lastInsertion.current = null;
   };
+  // While focused, the text is the draft whose references the grids outline.
+  useEffect(() => {
+    const sheet = target.current?.sheetId;
+    if (sheet) publishDraft({ sheetId: sheet, text: value });
+  }, [value]);
   // An input focused on mount (autoFocus) may be focused before React's handler is attached.
   // biome-ignore lint/correctness/useExhaustiveDependencies: register and unregister use refs
   useEffect(() => {

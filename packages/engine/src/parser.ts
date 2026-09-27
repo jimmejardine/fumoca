@@ -20,7 +20,9 @@ export type Expr =
   | { type: "negate"; operand: Expr }
   | { type: "binary"; operator: BinaryOperator; left: Expr; right: Expr }
   | { type: "call"; name: string; args: Expr[] }
-  | { type: "lookup"; sheet: string; column?: string; when: LookupTime };
+  | { type: "lookup"; sheet: string; column?: string; when: LookupTime }
+  /** `#REF!`: a reference that was moved off the grid by copying or filling. */
+  | { type: "refError" };
 
 /** The time in a series lookup: a period literal (`2026-10`) or a cell holding one. */
 export type LookupTime = { kind: "period"; text: string } | { kind: "ref"; address: string };
@@ -38,6 +40,7 @@ type Token =
   | { kind: "at" }
   | { kind: "period"; text: string }
   | { kind: "op"; op: string }
+  | { kind: "refError" }
   | { kind: "end" };
 
 const CELL_REF = /^\$?([A-Za-z]{1,3})\$?([0-9]+)(?![A-Za-z0-9_.(])/;
@@ -121,6 +124,11 @@ function tokenize(text: string, lenient = false): Token[] {
     if (name) {
       tokens.push({ kind: "name", name: name[0].toUpperCase(), text: name[0] });
       pos += name[0].length;
+      continue;
+    }
+    if (rest.toUpperCase().startsWith("#REF!")) {
+      tokens.push({ kind: "refError" });
+      pos += 5;
       continue;
     }
     const op = OPERATORS.find((candidate) => rest.startsWith(candidate));
@@ -272,6 +280,8 @@ class Parser {
     switch (token.kind) {
       case "number":
         return { type: "number", value: token.value };
+      case "refError":
+        return { type: "refError" };
       case "ref":
         // A sheet whose name looks like a cell reference, e.g. Q1[Rate]@2027.
         if (token.sheet !== undefined) {
@@ -317,6 +327,8 @@ function describe(token: Token): string {
   switch (token.kind) {
     case "number":
       return `number ${token.value}`;
+    case "refError":
+      return "#REF!";
     case "ref":
       return `reference ${token.text}`;
     case "name":
@@ -380,4 +392,42 @@ export function formulaReferences(text: string): FormulaReference[] {
     );
   });
   return references;
+}
+
+/** A cell reference's parts: an optional sheet prefix, and `$` anchors on column and row. */
+const REFERENCE_PARTS =
+  /^((?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)$/;
+
+const columnNumber = (letters: string) =>
+  [...letters.toUpperCase()].reduce((n, letter) => n * 26 + letter.charCodeAt(0) - 64, 0);
+
+function columnLetters(n: number): string {
+  let letters = "";
+  for (let rest = n; rest > 0; rest = Math.floor((rest - 1) / 26)) {
+    letters = String.fromCharCode(65 + ((rest - 1) % 26)) + letters;
+  }
+  return letters;
+}
+
+/**
+ * Adjusts a formula copied `dx` columns and `dy` rows away, as Excel does: relative references
+ * move with it, and the `$`-anchored column or row of a reference stays put. A reference that
+ * would move off the grid becomes `#REF!`. Text that isn't a formula is returned unchanged.
+ */
+export function shiftFormula(text: string, dx: number, dy: number): string {
+  if ((dx === 0 && dy === 0) || !text.startsWith("=")) return text;
+  let shifted = text;
+  for (const { start, end } of formulaReferences(text).reverse()) {
+    const parts = REFERENCE_PARTS.exec(text.slice(start, end));
+    if (!parts) continue;
+    const [, sheet = "", columnAnchor, letters = "A", rowAnchor, row = "1"] = parts;
+    const column = columnNumber(letters) + (columnAnchor ? 0 : dx);
+    const rowNumber = Number(row) + (rowAnchor ? 0 : dy);
+    const moved =
+      column < 1 || rowNumber < 1
+        ? "#REF!"
+        : `${sheet}${columnAnchor}${columnLetters(column)}${rowAnchor}${rowNumber}`;
+    shifted = shifted.slice(0, start) + moved + shifted.slice(end);
+  }
+  return shifted;
 }

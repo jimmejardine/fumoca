@@ -35,6 +35,7 @@ export {
   formulaReferences,
   type LookupTime,
   parseFormula,
+  shiftFormula,
 } from "./parser";
 export {
   GRANULARITIES,

@@ -62,8 +62,16 @@ This document holds the detailed specifications for fumoca. For a high-level ove
   - It applies where a reference can go: after `=`, `(`, `,` or an operator (ignoring spaces).
   - Clicking again straight away replaces the address just inserted. So `=B1*`, then clicking A1 and then A2, gives `=B1*A2`.
   - Elsewhere, for example right after a number, a click commits the edit and selects the clicked cell, as before.
+  - A click on a cell of another sheet, open side by side, inserts it with its sheet name (`Sheet2!A1`).
+  - **Arrow keys point too, in the cell editor:** where a reference can go, an arrow inserts the neighbouring cell of the edited cell, and further arrows move that reference, which is outlined as it moves. After a click, arrows move on from the clicked cell. Anywhere else, arrows behave as before: Up and Down commit and move. The formula bar's arrows always move the caret.
   - Only single cells can be pointed at, with no dragged ranges.
 - **Syntax errors are kept:** a formula with a syntax error is committed as typed, unlike Excel, so it can be fixed rather than retyped. The cell shows `#ERROR!` with the reason in its tooltip, and cells that refer to it show errors too.
+- **Copying and filling formulas (implemented), as in Excel:**
+  - Copying puts the cells' shown answers on the clipboard, so pasting into another app gives what's shown. The grid also remembers the copied cells' inputs and positions.
+  - Pasting into a grid, on any sheet, checks whether the clipboard still holds that copy. If so, it pastes the inputs; otherwise the plain text.
+  - In a pasted formula, relative references move by the distance from the copied cell to the pasted one, and `$`-anchored columns and rows stay put. This applies to references to other sheets and to lookup time cells too. A larger paste range repeats the copy, each tile shifted.
+  - The fill handle does the same from the cells it fills from.
+  - A reference that would move off the grid becomes `#REF!`, and the cell shows `#REF!`.
 - Standard spreadsheet behaviour is expected:
   - Select cells, move with the keyboard, edit in place and in a formula bar
   - Copy and paste, with relative and absolute (`$A$1`) references adjusted
@@ -133,6 +141,9 @@ Every date value in fumoca is **tagged with a granularity** at all times. A date
   - Single cell: `A1`, `$A$1`, `A$1`, `$A1`
   - Range: `A1:B10`
   - Another worksheet: `Sheet2!A1`, or `'My Sheet'!A1:B10` when the name has spaces
+    - **Implemented** for single cells, as in Excel. A name is quoted when it isn't a plain identifier, and a quote inside a name is doubled (`'It''s'!A1`). Sheet names match in any case.
+    - An unknown sheet gives `#REF!`. Cycles across sheets give `#CIRC!`.
+    - Sheets can't be renamed yet, so references never need rewriting.
   - Time-series structured reference: `Rates[Rate]@2027-01` (see §5.3)
 - Named ranges **(proposed)**: users can name a cell or range (for example `UnitPrice`) and use the name in formulas.
 
@@ -518,8 +529,9 @@ Every uncertain cell shows live results.
   - So are text labels.
 - **Dependency highlighting:** when the selection is on a formula cell, each cell its formula references gets a thin (2px) coloured border. The formula bar and the in-cell editor show each reference in the same colour as its cell's border.
   - **Colours:** a deterministic sequence around the colour wheel. The i-th distinct reference, in order of first appearance, has hue 0° + i × the golden angle (≈137.5°), so neighbouring colours are far apart and blue, the selection colour, comes late. They are darker on the light theme and lighter on the dark theme. A repeated reference keeps its colour.
-  - The editors colour references live as they're typed. The borders follow the committed formula.
-  - Series lookups into other sheets (`Prices[Close]@2026-10`) aren't highlighted; a lookup's time cell (`Prices@A5`) is.
+  - While a formula is being edited, in the formula bar or in the cell, the colours and borders follow the text as it's typed or pointed. Otherwise they follow the selected cell's committed formula.
+  - References to other sheets (`Sheet2!A1`) are highlighted too; the border shows wherever that sheet is open.
+  - Series lookups (`Prices[Close]@2026-10`) aren't highlighted; a lookup's time cell (`Prices@A5`) is.
 - **Deterministic numbers:** Excel "General" style (up to 10 significant digits, no thousands separators), right-aligned.
 - **In-cell histogram:** every uncertain cell's background shows a faint histogram of its samples. It's drawn as a stretched inline SVG and follows light/dark mode.
   - It uses a 64-bin **streaming histogram** (`StreamingHistogram`, `packages/engine/src/histogram.ts`), ready for continuous sampling:

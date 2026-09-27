@@ -21,7 +21,7 @@ import { AppShell, Box, Divider, Text, useComputedColorScheme } from "@mantine/c
 import { modals } from "@mantine/modals";
 import { notifications } from "@mantine/notifications";
 import type { DockviewApi } from "dockview-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { formatCellInput, parseCellInput } from "./cellInput";
 import { dependencyHighlights } from "./dependencyColors";
 import { EngineClient } from "./engine/client";
@@ -34,6 +34,7 @@ import {
 import { FormulaBar } from "./FormulaBar";
 import { openTextFile, saveTextFile, type WorkbookFile } from "./files";
 import { MenuBar } from "./MenuBar";
+import { currentDraft, subscribeDraft } from "./pointing";
 import type { Recalculation, WorkbookResults } from "./recalc";
 import { openSheet, SheetArea, SheetAreaContext, showWorkbook } from "./SheetArea";
 import { type CellEdit, focusCellBelow } from "./SheetGrid";
@@ -385,16 +386,18 @@ export function App() {
     if (apiRef.current) openSheet(apiRef.current, docRef.current.workbook, sheetId);
   }, []);
 
-  // The selected cell's dependencies, outlined in every open sheet they're on (SPECS.md §6.5).
+  // The dependencies of the formula being edited, or else of the selected cell, outlined in every
+  // open sheet they're on (SPECS.md §6.5).
   const colorScheme = useComputedColorScheme("light");
+  const draft = useSyncExternalStore(subscribeDraft, currentDraft);
   const selectedInActive = activeSheetId ? selections.get(activeSheetId) : undefined;
-  const dependencies = useMemo(
-    () =>
-      activeSheetId && selectedInActive
-        ? dependencyHighlights(doc.workbook, activeSheetId, selectedInActive, colorScheme)
-        : new Map<string, Map<string, string>>(),
-    [doc.workbook, activeSheetId, selectedInActive, colorScheme],
-  );
+  const dependencies = useMemo(() => {
+    if (draft) return dependencyHighlights(doc.workbook, draft.sheetId, draft.text, colorScheme);
+    const sheet = doc.workbook.sheets.find((s) => s.id === activeSheetId);
+    return sheet && selectedInActive
+      ? dependencyHighlights(doc.workbook, sheet.id, sheet.cells[selectedInActive], colorScheme)
+      : new Map<string, Map<string, string>>();
+  }, [doc.workbook, activeSheetId, selectedInActive, colorScheme, draft]);
 
   const context = useMemo(
     () => ({

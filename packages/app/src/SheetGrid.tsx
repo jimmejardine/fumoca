@@ -10,8 +10,16 @@ import {
 } from "@revolist/react-datagrid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatCellInput } from "./cellInput";
+import {
+  type CopiedCells,
+  fillFromSource,
+  pasteFromCopy,
+  type RangeTarget,
+  type ScreenRange,
+  type SourceCell,
+} from "./copyPaste";
 import { FormulaInput } from "./FormulaInput";
-import { pointTarget } from "./pointing";
+import { moveReference, pointTarget } from "./pointing";
 import { type CellResult, formatResult } from "./recalc";
 import classes from "./SheetGrid.module.css";
 
@@ -142,6 +150,19 @@ function FormulaEditor({ column, save, close, val }: EditorType) {
     const above = { x: focused.cell.x, y: focused.cell.y - 1 }; // on-screen rows, so filter-aware
     await grid.setCellsFocus(above, above);
   };
+  // Point mode with the arrow keys, as in Excel: where a reference can go, an arrow inserts the
+  // cell next to the edited one, and further arrows move that reference.
+  const pointWithArrow = (key: string): boolean => {
+    const step = ARROW_STEPS[key];
+    const target = pointTarget();
+    if (!step || !target) return false;
+    const from = target.pointed() ?? addressOf(column.prop, row);
+    const moved = moveReference(from, step.dx, step.dy, {
+      columns: COLUMN_COUNT,
+      rows: ROW_COUNT,
+    });
+    return moved !== null && target.insert(moved);
+  };
   return (
     <FormulaInput
       className={classes.editor}
@@ -152,7 +173,12 @@ function FormulaEditor({ column, save, close, val }: EditorType) {
       onBlur={() => finish(true)}
       onKeyDown={(event) => {
         event.stopPropagation();
-        // Arrow Down commits as Enter does, moving to the cell below.
+        const modified = event.shiftKey || event.ctrlKey || event.altKey || event.metaKey;
+        if (!modified && pointWithArrow(event.key)) {
+          event.preventDefault();
+          return;
+        }
+        // Otherwise Arrow Down commits as Enter does, moving to the cell below.
         if (event.key === "Enter" || event.key === "ArrowDown") {
           event.preventDefault();
           finish(true);
@@ -165,7 +191,20 @@ function FormulaEditor({ column, save, close, val }: EditorType) {
   );
 }
 
+const ARROW_STEPS: Record<string, { dx: number; dy: number }> = {
+  ArrowUp: { dx: 0, dy: -1 },
+  ArrowDown: { dx: 0, dy: 1 },
+  ArrowLeft: { dx: -1, dy: 0 },
+  ArrowRight: { dx: 1, dy: 0 },
+};
+
 const EDITORS = { formula: Editor(FormulaEditor) };
+
+/**
+ * What was last copied from any grid, so pasting it (on any sheet) pastes formulas rather than the
+ * answers the clipboard holds. The cells behind the copy are looked up once the copy is made.
+ */
+let lastCopy: { shown: string[][]; cells: Promise<SourceCell[][]> } | null = null;
 
 /** Grid elements by sheet id, so the formula bar can move focus back to the grid. */
 const gridElements = new Map<string, HTMLRevoGridElement>();
@@ -397,6 +436,85 @@ export function SheetGrid({
     if (error) onCommitError(error);
   };
 
+  // Copy: remember the copied cells' inputs and positions (SPECS.md §6.1).
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const listener = (event: Event) => {
+      const { range, data } = (event as CustomEvent<{ range: ScreenRange; data: unknown[][] }>)
+        .detail;
+      if (!range) return;
+      const shown = data.map((row) => row.map((value) => String(value ?? "")));
+      const cells = grid.getVisibleSource().then((visible) =>
+        (visible as Row[]).slice(range.y, range.y1 + 1).map((row) =>
+          COLUMN_LETTERS.slice(range.x, range.x1 + 1).map((letter, j) => ({
+            text: formatCellInput(sheetRef.current.cells[addressOf(letter, row)]),
+            x: range.x + j,
+            y: row[ROW_KEY],
+          })),
+        ),
+      );
+      lastCopy = { shown, cells };
+    };
+    grid.addEventListener("clipboardrangecopy", listener);
+    return () => grid.removeEventListener("clipboardrangecopy", listener);
+  }, []);
+
+  /**
+   * Range edits: paste, the fill handle, and clearing a selection. Pasting what was copied from a
+   * grid, and filling, write the source cells' inputs with formulas shifted as in Excel.
+   */
+  const applyRangeEdit = async (detail: {
+    data: Record<string, Record<string, unknown>>;
+    models: Record<string, unknown>;
+    oldRange?: ScreenRange | null;
+    newRange?: ScreenRange | null;
+  }) => {
+    const { data, models, oldRange, newRange } = detail;
+    const targets: (RangeTarget & { address: string })[] = [];
+    for (const [rowIndex, changes] of Object.entries(data)) {
+      const row = models[Number(rowIndex)] as Row | undefined;
+      if (!row) continue;
+      for (const [prop, value] of Object.entries(changes)) {
+        const x = COLUMN_LETTERS.indexOf(prop);
+        if (x < 0) continue;
+        targets.push({
+          address: addressOf(prop, row),
+          screenX: x,
+          screenY: Number(rowIndex),
+          x,
+          y: row[ROW_KEY],
+          value: String(value ?? ""),
+        });
+      }
+    }
+    if (targets.length === 0) return;
+    let texts: string[] | null = null;
+    const filling =
+      oldRange &&
+      newRange &&
+      (oldRange.x !== newRange.x ||
+        oldRange.y !== newRange.y ||
+        oldRange.x1 !== newRange.x1 ||
+        oldRange.y1 !== newRange.y1);
+    if (filling) {
+      const visible = ((await gridRef.current?.getVisibleSource()) ?? []) as Row[];
+      texts = fillFromSource(targets, oldRange, newRange, (screenX, screenY) => {
+        const row = visible[screenY];
+        const letter = COLUMN_LETTERS[screenX];
+        if (!row || !letter) return undefined;
+        const text = formatCellInput(sheetRef.current.cells[addressOf(letter, row)]);
+        return { text, x: screenX, y: row[ROW_KEY] };
+      });
+    } else if (newRange && lastCopy) {
+      const copied: CopiedCells = { shown: lastCopy.shown, cells: await lastCopy.cells };
+      texts = pasteFromCopy(copied, targets, newRange);
+    }
+    commit(
+      targets.map((target, i) => ({ address: target.address, text: texts?.[i] ?? target.value })),
+    );
+  };
+
   return (
     <div ref={wrapperRef} className={classes.wrapper} data-sheet={sheet.id}>
       {dependencyStyles && <style>{dependencyStyles}</style>}
@@ -425,20 +543,9 @@ export function SheetGrid({
           commit([{ address: addressOf(prop, model as Row), text: String(val ?? "") }]);
         }}
         onBeforerangeedit={(event) => {
-          // Range edits: paste, autofill and clearing a selection.
+          // The workbook owns cell contents: apply the edit there and let the grid re-render.
           event.preventDefault();
-          const { data, models } = event.detail;
-          const edits: CellEdit[] = [];
-          for (const [rowIndex, changes] of Object.entries(data)) {
-            const row = models[Number(rowIndex)] as Row | undefined;
-            if (!row) continue;
-            for (const [prop, value] of Object.entries(changes)) {
-              if (COLUMN_LETTERS.includes(prop)) {
-                edits.push({ address: addressOf(prop, row), text: String(value ?? "") });
-              }
-            }
-          }
-          if (edits.length > 0) commit(edits);
+          void applyRangeEdit(event.detail);
         }}
         style={{ height: "100%" }}
       />

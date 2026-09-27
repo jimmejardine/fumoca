@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertReference } from "./pointing";
+import { insertReference, moveReference } from "./pointing";
 
 const at = (value: string, address: string, caret = value.length) =>
   insertReference(value, caret, caret, address)?.value ?? null;
@@ -43,5 +43,28 @@ describe("insertReference", () => {
     const first = insertReference("=", 1, 1, "A1");
     expect(insertReference("=A1*", 4, 4, "B1", first?.inserted)?.value).toBe("=A1*B1");
     expect(insertReference("=A1", 3, 3, "B1", { start: 1, end: 3, value: "=A2" })).toBeNull();
+  });
+});
+
+describe("moveReference", () => {
+  const bounds = { columns: 26, rows: 200 };
+  it("moves by whole cells", () => {
+    expect(moveReference("B3", 0, -1, bounds)).toBe("B2");
+    expect(moveReference("B3", 1, 0, bounds)).toBe("C3");
+    expect(moveReference("B3", -1, 2, bounds)).toBe("A5");
+  });
+
+  it("stays within the grid", () => {
+    expect(moveReference("A1", -1, -1, bounds)).toBe("A1");
+    expect(moveReference("Z200", 1, 1, bounds)).toBe("Z200");
+  });
+
+  it("keeps the sheet of a cross-sheet reference", () => {
+    expect(moveReference("Inputs!B3", 0, 1, bounds)).toBe("Inputs!B4");
+    expect(moveReference("'My Sheet'!B3", 1, 0, bounds)).toBe("'My Sheet'!C3");
+  });
+
+  it("ignores text that isn't a reference", () => {
+    expect(moveReference("SUM", 0, 1, bounds)).toBeNull();
   });
 });

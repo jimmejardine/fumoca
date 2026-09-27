@@ -349,6 +349,40 @@ test("clicking a cell while editing a formula inserts its address", async ({ pag
   await expect(cell(page, 4, 1)).toHaveText("1");
 });
 
+test("arrow keys point at cells while a reference can go in the cell editor", async ({ page }) => {
+  const address = page.getByLabel("Cell address");
+  const editor = page.getByLabel("Cell editor");
+  await editCell(page, 0, 0, "3"); // A1
+  await editCell(page, 0, 1, "4"); // B1
+  const outlined = (row: number, col: number) =>
+    cell(page, row, col).evaluate((element) => getComputedStyle(element).outlineStyle !== "none");
+
+  await cell(page, 2, 2).click();
+  await expect(address).toHaveValue("C3");
+  await page.keyboard.type("=");
+  await expect(editor).toHaveValue("=");
+  // From the edited cell: left to B3, then up twice to B1, outlined as it goes.
+  await page.keyboard.press("ArrowLeft");
+  await expect(editor).toHaveValue("=B3");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(editor).toHaveValue("=B1");
+  await expect.poll(() => outlined(0, 1)).toBe(true);
+  await expect.poll(() => outlined(2, 1)).toBe(false);
+  // After an operator, pointing starts again from the edited cell.
+  await page.keyboard.type("+");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(editor).toHaveValue("=B1+A1");
+  // Where no reference can go, an arrow commits as before.
+  await page.keyboard.type("*2");
+  await page.keyboard.press("ArrowDown");
+  await expect(cell(page, 2, 2)).toHaveText("10");
+  await expect(address).toHaveValue("C4");
+});
+
 test("formulas reference cells on other sheets, and can point at them", async ({ page }) => {
   await modelMenu(page, "New sheet");
   await expect(tabs(page).filter({ hasText: "Sheet2" })).toHaveCount(1);
@@ -402,6 +436,56 @@ test("formulas reference cells on other sheets, and can point at them", async ({
   await page.keyboard.type("+1");
   await formulaBar(page).press("Enter");
   await expect(cellIn(0, 1, 1)).toHaveText("6");
+});
+
+test("copied and filled formulas shift their references, as in Excel", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const address = page.getByLabel("Cell address");
+  await editCell(page, 0, 0, "2"); // A1
+  await editCell(page, 1, 0, "3"); // A2
+  await editCell(page, 0, 1, "=A1*10"); // B1
+  await editCell(page, 0, 2, "=$A$1+A1"); // C1
+  await expect(cell(page, 0, 1)).toHaveText("20");
+
+  // Copy B1 and paste into B2: the relative reference moves down a row.
+  await cell(page, 0, 1).click();
+  await expect(address).toHaveValue("B1");
+  await page.keyboard.press("Control+c");
+  await cell(page, 1, 1).click();
+  await expect(address).toHaveValue("B2");
+  await page.keyboard.press("Control+v");
+  await expect(cell(page, 1, 1)).toHaveText("30");
+  await expect(formulaBar(page)).toHaveValue("=A2*10");
+
+  // Anchored parts stay put.
+  await cell(page, 0, 2).click();
+  await expect(address).toHaveValue("C1");
+  await page.keyboard.press("Control+c");
+  await cell(page, 1, 2).click();
+  await expect(address).toHaveValue("C2");
+  await page.keyboard.press("Control+v");
+  await expect(cell(page, 1, 2)).toHaveText("5");
+  await expect(formulaBar(page)).toHaveValue("=$A$1+A2");
+
+  // The fill handle: drag B2 down to B4.
+  await editCell(page, 2, 0, "4"); // A3
+  await expect(async () => {
+    await cell(page, 1, 1).click();
+    const handle = page.locator(".autofill-handle").first();
+    const target = await cell(page, 3, 1).boundingBox();
+    if (!target) throw new Error("no target cell");
+    await handle.hover();
+    await page.mouse.down();
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect(cell(page, 2, 1)).toHaveText("40", { timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
+  await expect(cell(page, 3, 1)).toHaveText("0");
+  await cell(page, 3, 1).click();
+  await expect(formulaBar(page)).toHaveValue("=A4*10");
 });
 
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {

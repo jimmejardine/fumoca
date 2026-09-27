@@ -1,6 +1,9 @@
+import { formatReference, formulaReferences } from "@fumoca/engine";
+
 /**
  * Point mode (SPECS.md §6.1): while a formula is being edited, clicking a cell inserts its address
- * at the caret instead of selecting the cell, as in Excel.
+ * at the caret instead of selecting the cell, as in Excel. In the cell editor, arrow keys point
+ * too, starting from the edited cell.
  */
 
 /** Characters after which a reference can go: the formula's start, a bracket, a comma, an operator. */
@@ -40,11 +43,35 @@ export function insertReference(
   return { value: next, caret, inserted: { start, end: caret, value: next } };
 }
 
+/**
+ * Moves a reference (`B3`, or `Inputs!B3`) by whole cells, staying within the grid's bounds.
+ * Returns null if the text isn't a single reference.
+ */
+export function moveReference(
+  reference: string,
+  dx: number,
+  dy: number,
+  bounds: { columns: number; rows: number },
+): string | null {
+  const [parsed] = formulaReferences(`=${reference}`);
+  const match = parsed && /^([A-Z])([0-9]+)$/.exec(parsed.address);
+  if (!parsed || !match?.[1] || !match[2]) return null;
+  const x = Math.min(Math.max(match[1].charCodeAt(0) - 65 + dx, 0), bounds.columns - 1);
+  const y = Math.min(Math.max(Number(match[2]) - 1 + dy, 0), bounds.rows - 1);
+  const address = `${String.fromCharCode(65 + x)}${y + 1}`;
+  return parsed.sheet === undefined ? address : formatReference(parsed.sheet, address);
+}
+
 /** The editor that receives pointed references: the focused formula input, if any. */
 export interface PointTarget {
   sheetId: string | undefined;
   /** Inserts the address if a reference can go at the caret; returns whether it did. */
   insert: (address: string) => boolean;
+  /**
+   * The reference pointing just inserted, while pointing continues (the text is unchanged and the
+   * caret still right after it); null otherwise.
+   */
+  pointed: () => string | null;
 }
 
 let target: PointTarget | null = null;
@@ -58,4 +85,26 @@ export function setPointTarget(next: PointTarget | null) {
 /** Clears the point target, if it's still the given one. */
 export function clearPointTarget(previous: PointTarget) {
   if (target === previous) target = null;
+}
+
+/** The formula being edited, so the grids can outline its references as it's typed. */
+export interface Draft {
+  sheetId: string;
+  text: string;
+}
+
+let draft: Draft | null = null;
+const draftListeners = new Set<() => void>();
+
+export const currentDraft = () => draft;
+
+export function publishDraft(next: Draft | null) {
+  if (draft?.sheetId === next?.sheetId && draft?.text === next?.text) return;
+  draft = next;
+  for (const listener of draftListeners) listener();
+}
+
+export function subscribeDraft(listener: () => void): () => void {
+  draftListeners.add(listener);
+  return () => draftListeners.delete(listener);
 }

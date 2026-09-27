@@ -52,10 +52,11 @@ describe("dependencyHighlights", () => {
     const model = withInputs.sheets[0];
     if (!model) throw new Error("no sheet");
     const workbook = setCell(withInputs, model.id, "C1", `=A1 + ${inputs.name}!B2 * A1`);
-    const highlights = dependencyHighlights(workbook, model.id, "C1", "light");
+    const formula = workbook.sheets[0]?.cells.C1;
+    const highlights = dependencyHighlights(workbook, model.id, formula, "light");
     expect(highlights.get(model.id)).toEqual(new Map([["A1", dependencyColor(0, "light")]]));
     expect(highlights.get(inputs.id)).toEqual(new Map([["B2", dependencyColor(1, "light")]]));
-    expect(dependencyHighlights(workbook, model.id, "A1", "light").size).toBe(0);
+    expect(dependencyHighlights(workbook, model.id, 42, "light").size).toBe(0);
   });
 
   it("skips references to sheets that don't exist", () => {
@@ -63,7 +64,7 @@ describe("dependencyHighlights", () => {
     const model = workbook.sheets[0];
     if (!model) throw new Error("no sheet");
     const withFormula = setCell(workbook, model.id, "A1", "=Nowhere!B2 + B3");
-    const highlights = dependencyHighlights(withFormula, model.id, "A1", "light");
+    const highlights = dependencyHighlights(withFormula, model.id, "=Nowhere!B2 + B3", "light");
     expect([...highlights.keys()]).toEqual([model.id]);
     expect([...(highlights.get(model.id)?.keys() ?? [])]).toEqual(["B3"]);
   });
