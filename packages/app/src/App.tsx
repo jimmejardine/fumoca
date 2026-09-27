@@ -17,12 +17,13 @@ import {
   suggestPeriod,
   type Workbook,
 } from "@fumoca/storage";
-import { AppShell, Box, Divider, Text } from "@mantine/core";
+import { AppShell, Box, Divider, Text, useComputedColorScheme } from "@mantine/core";
 import { modals } from "@mantine/modals";
 import { notifications } from "@mantine/notifications";
 import type { DockviewApi } from "dockview-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCellInput, parseCellInput } from "./cellInput";
+import { dependencyHighlights } from "./dependencyColors";
 import { EngineClient } from "./engine/client";
 import {
   DEFAULT_SETTINGS,
@@ -384,6 +385,17 @@ export function App() {
     if (apiRef.current) openSheet(apiRef.current, docRef.current.workbook, sheetId);
   }, []);
 
+  // The selected cell's dependencies, outlined in every open sheet they're on (SPECS.md §6.5).
+  const colorScheme = useComputedColorScheme("light");
+  const selectedInActive = activeSheetId ? selections.get(activeSheetId) : undefined;
+  const dependencies = useMemo(
+    () =>
+      activeSheetId && selectedInActive
+        ? dependencyHighlights(doc.workbook, activeSheetId, selectedInActive, colorScheme)
+        : new Map<string, Map<string, string>>(),
+    [doc.workbook, activeSheetId, selectedInActive, colorScheme],
+  );
+
   const context = useMemo(
     () => ({
       workbook: doc.workbook,
@@ -395,8 +407,10 @@ export function App() {
       onAddSeriesColumn: handleAddSeriesColumn,
       onRenameSeriesColumn: handleRenameSeriesColumn,
       onSortSeries: handleSortSeries,
+      dependencies,
     }),
     [
+      dependencies,
       doc.workbook,
       results,
       handleSelect,
@@ -432,6 +446,7 @@ export function App() {
         <Divider />
         <FormulaBar
           address={selectedAddress}
+          sheetId={activeSheet?.id}
           content={selectedContent}
           status={status}
           statusDetail={statusDetail}

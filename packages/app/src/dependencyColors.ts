@@ -1,4 +1,5 @@
-import { formulaReferences } from "@fumoca/engine";
+import { type FormulaReference, formulaReferences } from "@fumoca/engine";
+import type { Workbook } from "@fumoca/storage";
 
 /**
  * Colours for a cell's dependencies (SPECS.md §6.5): a deterministic sequence that steps around
@@ -23,14 +24,47 @@ export function dependencyColor(i: number, scheme: ColorScheme): string {
   return scheme === "dark" ? `hsl(${hue} 80% 65%)` : `hsl(${hue} 75% 42%)`;
 }
 
+/** Identifies the cell a reference names: `B3`, or `inputs!B3` on another sheet (any case). */
+export const referenceKey = ({ sheet, address }: Pick<FormulaReference, "sheet" | "address">) =>
+  sheet === undefined ? address : `${sheet.toLowerCase()}!${address}`;
+
 /**
- * The colour for each cell a formula references, by address: in order of first appearance, so a
- * repeated reference keeps its colour. Empty for text that isn't a formula.
+ * The colour for each cell a formula references, by `referenceKey`: in order of first
+ * appearance, so a repeated reference keeps its colour. Empty for text that isn't a formula.
  */
 export function referenceColors(text: string, scheme: ColorScheme): Map<string, string> {
   const colors = new Map<string, string>();
-  for (const { address } of formulaReferences(text)) {
-    if (!colors.has(address)) colors.set(address, dependencyColor(colors.size, scheme));
+  for (const reference of formulaReferences(text)) {
+    const key = referenceKey(reference);
+    if (!colors.has(key)) colors.set(key, dependencyColor(colors.size, scheme));
   }
   return colors;
+}
+
+/**
+ * The dependency borders to draw for a selected cell: for each sheet, by id, the colour of each of
+ * its cells that the selected cell's formula references. References to other sheets are included,
+ * so their borders show wherever those sheets are open. The first colour for a cell wins.
+ */
+export function dependencyHighlights(
+  workbook: Workbook,
+  sheetId: string,
+  address: string,
+  scheme: ColorScheme,
+): Map<string, Map<string, string>> {
+  const highlights = new Map<string, Map<string, string>>();
+  const text = workbook.sheets.find((s) => s.id === sheetId)?.cells[address];
+  if (typeof text !== "string") return highlights;
+  const colors = referenceColors(text, scheme);
+  for (const reference of formulaReferences(text)) {
+    const name = reference.sheet?.toLowerCase();
+    const target =
+      name === undefined ? sheetId : workbook.sheets.find((s) => s.name.toLowerCase() === name)?.id;
+    const color = colors.get(referenceKey(reference));
+    if (!target || !color) continue;
+    const cells = highlights.get(target) ?? new Map<string, string>();
+    if (!cells.has(reference.address)) cells.set(reference.address, color);
+    highlights.set(target, cells);
+  }
+  return highlights;
 }

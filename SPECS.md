@@ -58,6 +58,11 @@ This document holds the detailed specifications for fumoca. For a high-level ove
   - F2 and double-click show the cell's raw formula or value; typing starts a new entry.
   - Enter commits and Escape cancels.
   - Arrow Down commits like Enter and moves down; Arrow Up commits and moves up.
+- **Point mode:** while a formula is being edited, in the formula bar or in the cell, clicking a cell inserts its address at the caret instead of selecting it, as in Excel.
+  - It applies where a reference can go: after `=`, `(`, `,` or an operator (ignoring spaces).
+  - Clicking again straight away replaces the address just inserted. So `=B1*`, then clicking A1 and then A2, gives `=B1*A2`.
+  - Elsewhere, for example right after a number, a click commits the edit and selects the clicked cell, as before.
+  - Only single cells can be pointed at, with no dragged ranges.
 - **Syntax errors are kept:** a formula with a syntax error is committed as typed, unlike Excel, so it can be fixed rather than retyped. The cell shows `#ERROR!` with the reason in its tooltip, and cells that refer to it show errors too.
 - Standard spreadsheet behaviour is expected:
   - Select cells, move with the keyboard, edit in place and in a formula bar

@@ -30,6 +30,8 @@ export interface SheetAreaContextValue {
   onAddSeriesColumn: (sheetId: string) => void;
   onRenameSeriesColumn: (sheetId: string, index: number, name: string) => void;
   onSortSeries: (sheetId: string) => void;
+  /** The selected cell's dependencies to outline, by sheet id: colour by address. */
+  dependencies: Map<string, Map<string, string>>;
 }
 
 /** Dockview panels are created by dockview, so they read the live workbook from context. */
@@ -52,6 +54,7 @@ function SheetPanel({ params }: IDockviewPanelProps<SheetPanelParams>) {
       onCommit={(edits) => context.onCommit(sheet.id, edits)}
       onCommitError={context.onCommitError}
       onRenameColumn={setRenaming}
+      dependencies={context.dependencies.get(sheet.id)}
     />
   );
   if (!sheet.series) return grid;

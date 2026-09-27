@@ -1,4 +1,4 @@
-import { granularityOf } from "@fumoca/engine";
+import { formatReference, granularityOf } from "@fumoca/engine";
 import { lastUsedRow, PERIOD_COLUMN, type Sheet, suggestPeriod } from "@fumoca/storage";
 import { useComputedColorScheme } from "@mantine/core";
 import {
@@ -10,8 +10,8 @@ import {
 } from "@revolist/react-datagrid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatCellInput } from "./cellInput";
-import { referenceColors } from "./dependencyColors";
 import { FormulaInput } from "./FormulaInput";
+import { pointTarget } from "./pointing";
 import { type CellResult, formatResult } from "./recalc";
 import classes from "./SheetGrid.module.css";
 
@@ -194,6 +194,8 @@ export interface SheetGridProps {
   onCommitError: (message: string) => void;
   /** Series sheets: a value column's header was double-clicked (0 = the first value column). */
   onRenameColumn?: (index: number) => void;
+  /** Cells to outline as dependencies of the selected cell: colour by address. */
+  dependencies?: Map<string, string> | undefined;
 }
 
 /** One worksheet's grid. Cells show calculated answers; root cells are bold (SPECS.md §6.5). */
@@ -204,26 +206,25 @@ export function SheetGrid({
   onCommit,
   onCommitError,
   onRenameColumn,
+  dependencies,
 }: SheetGridProps) {
   const colorScheme = useComputedColorScheme("light");
   const gridRef = useRef<HTMLRevoGridElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const [filtered, setFiltered] = useState(false);
-  const [focused, setFocused] = useState<string | null>(null);
 
-  // Dependency borders (SPECS.md §6.5): each cell the focused cell's formula references gets an
+  // Dependency borders (SPECS.md §6.5): each cell the selected cell's formula references gets an
   // outline in its colour, the same colour as its name in the formula. A style rule per cell,
   // matched by address, so moving the selection doesn't re-render the grid's rows.
-  const focusedInput = focused ? sheet.cells[focused] : undefined;
   const dependencyStyles = useMemo(() => {
-    if (typeof focusedInput !== "string") return "";
     const scope = `[data-sheet="${CSS.escape(sheet.id)}"]`;
-    return [...referenceColors(focusedInput, colorScheme)]
+    return [...(dependencies ?? [])]
       .map(
         ([address, color]) =>
           `${scope} .rgCell[data-address="${address}"] { outline: 2px solid ${color}; outline-offset: -2px; }`,
       )
       .join("\n");
-  }, [focusedInput, colorScheme, sheet.id]);
+  }, [dependencies, sheet.id]);
 
   // Series sheets show only the time column and their value columns, headed by name (SPECS.md §5).
   const seriesColumns = sheet.series?.columns;
@@ -251,6 +252,44 @@ export function SheetGrid({
     grid.addEventListener("dblclick", listener);
     return () => grid.removeEventListener("dblclick", listener);
   }, [seriesColumns]);
+
+  // Point mode (SPECS.md §6.1): while a formula is being edited, in the formula bar or in a cell,
+  // clicking a cell inserts its address instead of selecting it. The listener captures the press
+  // before RevoGrid sees it, and preventing the default keeps focus in the editor.
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    // The press is handled at pointerdown; the mouse events that follow it are swallowed too, and
+    // mousedown's default (focusing the grid) is prevented.
+    let pointing = false;
+    const onPointerDown = (event: PointerEvent) => {
+      pointing = false;
+      if (event.button !== 0) return;
+      const cell = (event.target as Element | null)?.closest?.("revogr-data .rgCell[data-address]");
+      const address = cell?.getAttribute("data-address");
+      const target = pointTarget();
+      if (!address || !target) return;
+      // A cell on another sheet than the formula's is written with its sheet: Inputs!B3.
+      const reference =
+        target.sheetId === sheet.id ? address : formatReference(sheet.name, address);
+      if (!target.insert(reference)) return;
+      pointing = true;
+      event.stopPropagation();
+    };
+    const swallow = (event: Event) => {
+      if (!pointing) return;
+      event.stopPropagation();
+      if (event.type === "mousedown") event.preventDefault();
+      if (event.type === "click") pointing = false;
+    };
+    const swallowed = ["pointerup", "mousedown", "mouseup", "click"] as const;
+    wrapper.addEventListener("pointerdown", onPointerDown, true);
+    for (const type of swallowed) wrapper.addEventListener(type, swallow, true);
+    return () => {
+      wrapper.removeEventListener("pointerdown", onPointerDown, true);
+      for (const type of swallowed) wrapper.removeEventListener(type, swallow, true);
+    };
+  }, [sheet.id, sheet.name]);
 
   // Row headers show the real row number, not the on-screen position, so they stay correct while
   // a filter hides rows. They turn blue while filtered, as in Excel.
@@ -359,7 +398,7 @@ export function SheetGrid({
   };
 
   return (
-    <div className={classes.wrapper} data-sheet={sheet.id}>
+    <div ref={wrapperRef} className={classes.wrapper} data-sheet={sheet.id}>
       {dependencyStyles && <style>{dependencyStyles}</style>}
       <RevoGrid
         ref={gridRef}
@@ -377,7 +416,6 @@ export function SheetGrid({
           const { model, column } = event.detail;
           if (!model || !column) return;
           const address = addressOf(column.prop, model as Row);
-          setFocused(address);
           onSelect(address);
         }}
         onBeforeedit={(event) => {

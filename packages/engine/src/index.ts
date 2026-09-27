@@ -31,6 +31,7 @@ export {
   type Expr,
   type FormulaReference,
   FormulaSyntaxError,
+  formatReference,
   formulaReferences,
   type LookupTime,
   parseFormula,

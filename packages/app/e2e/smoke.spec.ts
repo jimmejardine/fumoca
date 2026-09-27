@@ -307,6 +307,103 @@ test("a formula's dependencies get coloured borders, matching the formula's text
   expect(await textColor("Cell editor", "B1")).toBe(await outline(0, 1));
 });
 
+test("clicking a cell while editing a formula inserts its address", async ({ page }) => {
+  const address = page.getByLabel("Cell address");
+  await editCell(page, 0, 1, "3"); // B1
+  await editCell(page, 1, 0, "4"); // A2
+
+  // In the formula bar: the clicked cell's address goes in, and the selection stays on B3.
+  await cell(page, 2, 1).click();
+  await expect(address).toHaveValue("B3");
+  await formulaBar(page).fill("=");
+  await cell(page, 0, 1).click();
+  await expect(formulaBar(page)).toHaveValue("=B1");
+  await expect(address).toHaveValue("B3");
+  await page.keyboard.type("*");
+  await expect(formulaBar(page)).toHaveValue("=B1*");
+  await cell(page, 0, 0).click();
+  await expect(formulaBar(page)).toHaveValue("=B1*A1");
+  // Clicking again replaces the address just inserted.
+  await cell(page, 1, 0).click();
+  await expect(formulaBar(page)).toHaveValue("=B1*A2");
+  await formulaBar(page).press("Enter");
+  await expect(cell(page, 2, 1)).toHaveText("12");
+
+  // In the cell: typing = starts a formula, and a click adds the reference.
+  await cell(page, 0, 2).click();
+  await expect(address).toHaveValue("C1");
+  await page.keyboard.type("=");
+  const editor = page.getByLabel("Cell editor");
+  await expect(editor).toHaveValue("=");
+  await cell(page, 1, 0).click();
+  await expect(editor).toHaveValue("=A2");
+  await editor.press("Enter");
+  await expect(cell(page, 0, 2)).toHaveText("4");
+
+  // Where no reference can go (after a number), a click commits and selects, as before.
+  await cell(page, 4, 1).click();
+  await expect(address).toHaveValue("B5");
+  await formulaBar(page).fill("=1");
+  await cell(page, 0, 0).click();
+  await expect(address).toHaveValue("A1");
+  await expect(cell(page, 4, 1)).toHaveText("1");
+});
+
+test("formulas reference cells on other sheets, and can point at them", async ({ page }) => {
+  await modelMenu(page, "New sheet");
+  await expect(tabs(page).filter({ hasText: "Sheet2" })).toHaveCount(1);
+  await editCell(page, 0, 0, "5"); // Sheet2!A1
+
+  // Typed: Sheet1!B1 = Sheet2!A1 * 2.
+  await tabs(page).filter({ hasText: "Sheet1" }).click();
+  await editCell(page, 0, 1, "=Sheet2!A1 * 2");
+  await expect(cell(page, 0, 1)).toHaveText("10");
+
+  // Tile Sheet2 to the right of Sheet1.
+  await expect(async () => {
+    const group = page.locator(".dv-groupview").first();
+    const box = await group.boundingBox();
+    if (!box) throw new Error("No tab group");
+    await tabs(page)
+      .filter({ hasText: "Sheet2" })
+      .dragTo(group, { targetPosition: { x: box.width - 30, y: box.height / 2 } });
+    await expect(page.locator(".dv-groupview")).toHaveCount(2, { timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
+  const cellIn = (group: number, row: number, col: number) =>
+    page
+      .locator(".dv-groupview")
+      .nth(group)
+      .locator(
+        `revogr-data[type="rgRow"][col-type="rgCol"] .rgCell[data-rgrow="${row}"][data-rgcol="${col}"]`,
+      )
+      .first();
+  await expect(cellIn(1, 0, 0)).toHaveText("5");
+
+  // Selecting B1 outlines Sheet2!A1, in the colour it has in the formula.
+  await cellIn(0, 0, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B1");
+  const outline = () =>
+    cellIn(1, 0, 0).evaluate((element) => {
+      const style = getComputedStyle(element);
+      return style.outlineStyle === "none" ? null : style.outlineColor;
+    });
+  await expect.poll(outline).not.toBeNull();
+  const reference = formulaBar(page).locator("..").locator('[data-reference="sheet2!A1"]');
+  expect(await reference.evaluate((element) => getComputedStyle(element).color)).toBe(
+    await outline(),
+  );
+
+  // Pointing at a cell on the other sheet inserts it with its sheet name.
+  await cellIn(0, 1, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B2");
+  await formulaBar(page).fill("=");
+  await cellIn(1, 0, 0).click();
+  await expect(formulaBar(page)).toHaveValue("=Sheet2!A1");
+  await page.keyboard.type("+1");
+  await formulaBar(page).press("Enter");
+  await expect(cellIn(0, 1, 1)).toHaveText("6");
+});
+
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {
   await editCell(page, 0, 0, "=FOO(1)");
   await editCell(page, 1, 0, "=A1 + 1");

@@ -6,6 +6,8 @@ import { FormulaInput } from "./FormulaInput";
 export interface FormulaBarProps {
   /** The selected cell's address, or null if no cell is selected. */
   address: string | null;
+  /** The selected cell's sheet: clicking its cells while editing a formula inserts references. */
+  sheetId?: string | undefined;
   /** The selected cell's raw content: its formula or value. */
   content: string;
   status: string;
@@ -25,6 +27,7 @@ export interface FormulaBarProps {
  */
 export function FormulaBar({
   address,
+  sheetId,
   content,
   status,
   statusDetail,
@@ -76,6 +79,7 @@ export function FormulaBar({
           value={draft}
           disabled={address === null}
           scheme={scheme}
+          sheetId={sheetId}
           className={classes.input}
           onChange={(value) => {
             setDraft(value);

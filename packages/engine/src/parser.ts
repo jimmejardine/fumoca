@@ -8,13 +8,15 @@
  * Series lookups use structured references (SPECS.md §5.3): `Prices[Close]@2026-10`, or
  * `Prices@2026-10` for the sheet's first value column. The time after `@` is a period literal or
  * a cell reference. Sheet names with spaces are quoted: `'Interest Rates'[Rate]@2027`.
+ *
+ * Cells on other sheets are referenced as in Excel: `Inputs!B3`, or `'Interest Rates'!B3`.
  */
 
 export type BinaryOperator = "+" | "-" | "*" | "/" | "^" | "=" | "<>" | "<" | ">" | "<=" | ">=";
 
 export type Expr =
   | { type: "number"; value: number }
-  | { type: "ref"; address: string }
+  | { type: "ref"; address: string; sheet?: string }
   | { type: "negate"; operand: Expr }
   | { type: "binary"; operator: BinaryOperator; left: Expr; right: Expr }
   | { type: "call"; name: string; args: Expr[] }
@@ -29,7 +31,7 @@ export class FormulaSyntaxError extends Error {
 
 type Token =
   | { kind: "number"; value: number }
-  | { kind: "ref"; address: string; text: string; start: number }
+  | { kind: "ref"; address: string; text: string; start: number; sheet?: string }
   | { kind: "name"; name: string; text: string }
   | { kind: "sheet"; name: string }
   | { kind: "column"; name: string }
@@ -43,6 +45,11 @@ const NUMBER = /^(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_.]*/;
 const OPERATORS = ["<>", "<=", ">=", "+", "-", "*", "/", "^", "%", "=", "<", ">", "(", ")", ","];
 const QUOTED_SHEET = /^'((?:[^']|'')+)'/;
+/** A reference to a cell on another sheet: `Inputs!B3` or `'Interest Rates'!$B$3`. */
+const SHEET_REF =
+  /^(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_.]*))!\$?([A-Za-z]{1,3})\$?([0-9]+)(?![A-Za-z0-9_.(])/;
+/** Sheet names that can be written without quotes in a reference. */
+const PLAIN_SHEET_NAME = /^[A-Za-z_][A-Za-z0-9_.]*$/;
 const COLUMN = /^\[([^\]]*)\]/;
 /** Period literals, longest first (SPECS.md §3.1). */
 const PERIOD =
@@ -57,6 +64,18 @@ function tokenize(text: string, lenient = false): Token[] {
     const space = /^\s+/.exec(rest);
     if (space) {
       pos += space[0].length;
+      continue;
+    }
+    const sheetRef = SHEET_REF.exec(rest);
+    if (sheetRef) {
+      tokens.push({
+        kind: "ref",
+        address: `${sheetRef[3]?.toUpperCase()}${sheetRef[4]}`,
+        text: sheetRef[0],
+        start: pos,
+        sheet: sheetRef[1] !== undefined ? sheetRef[1].replaceAll("''", "'") : (sheetRef[2] ?? ""),
+      });
+      pos += sheetRef[0].length;
       continue;
     }
     const quoted = QUOTED_SHEET.exec(rest);
@@ -255,6 +274,9 @@ class Parser {
         return { type: "number", value: token.value };
       case "ref":
         // A sheet whose name looks like a cell reference, e.g. Q1[Rate]@2027.
+        if (token.sheet !== undefined) {
+          return { type: "ref", address: token.address, sheet: token.sheet };
+        }
         if (this.startsLookup()) return this.lookup(token.text);
         return { type: "ref", address: token.address };
       case "sheet":
@@ -296,7 +318,7 @@ function describe(token: Token): string {
     case "number":
       return `number ${token.value}`;
     case "ref":
-      return `reference ${token.address}`;
+      return `reference ${token.text}`;
     case "name":
       return `name ${token.name}`;
     case "sheet":
@@ -323,8 +345,16 @@ export function parseFormula(text: string): Expr {
 /** A cell reference in formula text, with its span (offsets into the text as given). */
 export interface FormulaReference {
   address: string;
+  /** The sheet named in the reference (`Inputs!B3`), or undefined for the formula's own sheet. */
+  sheet?: string;
   start: number;
   end: number;
+}
+
+/** Writes a reference to a cell on a sheet, quoting the sheet name if it needs it. */
+export function formatReference(sheet: string, address: string): string {
+  const name = PLAIN_SHEET_NAME.test(sheet) ? sheet : `'${sheet.replaceAll("'", "''")}'`;
+  return `${name}!${address}`;
 }
 
 /**
@@ -342,7 +372,12 @@ export function formulaReferences(text: string): FormulaReference[] {
     const next = tokens[i + 1]?.kind;
     if (next === "column" || next === "at") return;
     const start = token.start + 1;
-    references.push({ address: token.address, start, end: start + token.text.length });
+    const end = start + token.text.length;
+    references.push(
+      token.sheet === undefined
+        ? { address: token.address, start, end }
+        : { address: token.address, sheet: token.sheet, start, end },
+    );
   });
   return references;
 }

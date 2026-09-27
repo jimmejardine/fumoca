@@ -283,13 +283,24 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     return key;
   };
 
-  // Dependencies, with every lookup resolved to its target cell.
+  /** Resolves a cell reference, which may name another sheet (`Inputs!B3`), to its key. */
+  const resolveRef = (ref: { address: string; sheet?: string }, fromSheet: number): string => {
+    if (ref.sheet === undefined) return cellKey(fromSheet, normalizeAddress(ref.address));
+    const target = sheets.findIndex((s) => s.name.toLowerCase() === ref.sheet?.toLowerCase());
+    if (target < 0) throw new CompileError(`There is no sheet named ${ref.sheet}`, "#REF!");
+    return cellKey(target, normalizeAddress(ref.address));
+  };
+
+  // Dependencies, with every reference and lookup resolved to its target cell.
   const lookupTargets = new WeakMap<Expr, string>();
   const collectDeps = (expr: Expr, sheetIndex: number, into: Set<string>): void => {
     switch (expr.type) {
-      case "ref":
-        into.add(cellKey(sheetIndex, expr.address));
+      case "ref": {
+        const key = resolveRef(expr, sheetIndex);
+        lookupTargets.set(expr, key);
+        into.add(key);
         break;
+      }
       case "lookup": {
         const key = resolveLookup(expr, sheetIndex);
         lookupTargets.set(expr, key);
@@ -350,7 +361,7 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
       case "number":
         return emit({ kind: "const", value: expr.value });
       case "ref":
-        return readCell(cellKey(sheetIndex, expr.address), sheetIndex);
+        return readCell(lookupTargets.get(expr) ?? resolveRef(expr, sheetIndex), sheetIndex);
       case "lookup":
         return readCell(lookupTargets.get(expr) ?? "", sheetIndex);
       case "negate":
