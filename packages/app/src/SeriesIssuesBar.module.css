@@ -1,0 +1,25 @@
+/* Duplicate periods: an error, pink. */
+.error {
+  background-color: #ffe0ea;
+  color: #a61e4d;
+  border-top: 1px solid #fcc2d7;
+}
+
+/* Periods out of order: a warning, beige. */
+.warning {
+  background-color: #f6efdc;
+  color: #6b5317;
+  border-top: 1px solid #eadfbf;
+}
+
+:global([data-mantine-color-scheme="dark"]) .error {
+  background-color: #4a1f2e;
+  color: #fcc2d7;
+  border-top-color: #6b2a42;
+}
+
+:global([data-mantine-color-scheme="dark"]) .warning {
+  background-color: #3b3424;
+  color: #eadfbf;
+  border-top-color: #544a31;
+}

@@ -10,6 +10,7 @@ import {
 import { createContext, useContext, useState } from "react";
 import { RenameColumnModal } from "./RenameColumnModal";
 import type { WorkbookResults } from "./recalc";
+import { SeriesIssuesBar } from "./SeriesIssuesBar";
 import { SeriesToolbar } from "./SeriesToolbar";
 import { type CellEdit, SheetGrid } from "./SheetGrid";
 
@@ -28,6 +29,7 @@ export interface SheetAreaContextValue {
   onSeriesSettingsChange: (sheetId: string, settings: SeriesSettings) => void;
   onAddSeriesColumn: (sheetId: string) => void;
   onRenameSeriesColumn: (sheetId: string, index: number, name: string) => void;
+  onSortSeries: (sheetId: string) => void;
 }
 
 /** Dockview panels are created by dockview, so they read the live workbook from context. */
@@ -67,6 +69,7 @@ function SheetPanel({ params }: IDockviewPanelProps<SheetPanelParams>) {
         onClose={() => setRenaming(null)}
       />
       <Box style={{ flex: 1, minHeight: 0 }}>{grid}</Box>
+      <SeriesIssuesBar sheet={sheet} onSort={() => context.onSortSeries(sheet.id)} />
     </Stack>
   );
 }

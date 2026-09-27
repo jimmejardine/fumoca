@@ -227,6 +227,36 @@ test("F2 edits the cell's formula in the grid", async ({ page }) => {
   await expect(cell(page, 1, 1)).toHaveText("2500");
 });
 
+test("arrow up and down commit an in-cell edit and move", async ({ page }) => {
+  const address = page.getByLabel("Cell address");
+  const editor = page.getByLabel("Cell editor");
+  await cell(page, 2, 1).click();
+  await expect(address).toHaveValue("B3");
+
+  // Down commits, as Enter does, and moves to the cell below.
+  await page.keyboard.press("F2");
+  await editor.fill("5");
+  await editor.press("ArrowDown");
+  await expect(cell(page, 2, 1)).toHaveText("5");
+  await expect(address).toHaveValue("B4");
+
+  // Up commits and moves to the cell above; the grid keeps the keyboard.
+  await page.keyboard.press("F2");
+  await editor.fill("=B3 * 2");
+  await editor.press("ArrowUp");
+  await expect(cell(page, 3, 1)).toHaveText("10");
+  await expect(address).toHaveValue("B3");
+  await page.keyboard.press("ArrowUp");
+  await expect(address).toHaveValue("B2");
+
+  // Typing into a cell starts an entry, which an arrow also commits.
+  await page.keyboard.type("7");
+  await expect(editor).toBeVisible();
+  await page.keyboard.press("ArrowUp");
+  await expect(cell(page, 1, 1)).toHaveText("7");
+  await expect(address).toHaveValue("B1");
+});
+
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {
   await editCell(page, 0, 0, "=FOO(1)");
   await editCell(page, 1, 0, "=A1 + 1");
@@ -398,12 +428,16 @@ test("Model → New sheet adds and opens a sheet", async ({ page }) => {
   await expect(title(page)).toHaveText("Untitled •");
 });
 
-test("Model → New series sheet creates a monthly time column with its own toolbar", async ({
+const granularity = (page: Page) => page.locator('input[aria-label="Granularity"]');
+const seriesRows = (page: Page) =>
+  page.locator('revogr-data[type="rgRow"][col-type="rgCol"] .rgCell[data-rgcol="0"]');
+
+test("Model → New series sheet creates an empty monthly sheet with one row to type into", async ({
   page,
 }) => {
   await modelMenu(page, "New series sheet");
   await expect(tabs(page)).toHaveText(["Sheet1", "Series1"]);
-  await expect(page.locator('input[aria-label="Granularity"]')).toHaveValue("Monthly");
+  await expect(granularity(page)).toHaveValue("Monthly");
   await expect(page.locator('input[aria-label="Type"]')).toHaveValue("Level");
   // Headers name the columns; there are no row numbers.
   await expect(page.locator("revogr-header .rgHeaderCell .header-content")).toHaveText([
@@ -411,25 +445,69 @@ test("Model → New series sheet creates a monthly time column with its own tool
     "Value",
   ]);
   await expect(page.locator('revogr-data[col-type="rowHeaders"] .rgCell')).toHaveCount(0);
-  await expect(cell(page, 0, 0)).toHaveText(/^\d{4}-\d{2}$/);
-  await expect(cell(page, 1, 0)).toHaveText(/^\d{4}-\d{2}$/);
+  // Empty, with a single row; typing into the last row adds another below it.
+  await expect(seriesRows(page)).toHaveCount(1);
+  await expect(cell(page, 0, 0)).toHaveText("");
+  await editCell(page, 0, 0, "2026-01");
+  await expect(seriesRows(page)).toHaveCount(2);
+  await editCell(page, 1, 0, "2026-02");
+  await expect(seriesRows(page)).toHaveCount(3);
   expect(await background(page, 1, 0)).not.toBe(RED);
 
   // A day in a monthly sheet is the wrong granularity: the whole row turns red.
-  await editCell(page, 3, 0, "2026-09-15");
-  await expect.poll(() => background(page, 3, 0)).toBe(RED);
-  expect(await background(page, 3, 1)).toBe(RED);
-  expect(await background(page, 2, 0)).not.toBe(RED);
+  await editCell(page, 2, 0, "2026-03-15");
+  await expect.poll(() => background(page, 2, 0)).toBe(RED);
+  expect(await background(page, 2, 1)).toBe(RED);
+  expect(await background(page, 1, 0)).not.toBe(RED);
 
   // Switching the sheet to daily flips which rows are wrong.
-  await page.locator('input[aria-label="Granularity"]').click();
+  await granularity(page).click();
   await page.getByRole("option", { name: "Daily" }).click();
-  await expect.poll(() => background(page, 3, 0)).not.toBe(RED);
-  expect(await background(page, 2, 0)).toBe(RED);
+  await expect.poll(() => background(page, 2, 0)).not.toBe(RED);
+  expect(await background(page, 1, 0)).toBe(RED);
 
   await page.locator('input[aria-label="Type"]').click();
   await page.getByRole("option", { name: "Flow" }).click();
   await expect(page.locator('input[aria-label="Type"]')).toHaveValue("Flow");
+});
+
+test("the first period typed into an empty series sheet sets its granularity", async ({ page }) => {
+  await modelMenu(page, "New series sheet");
+  await expect(granularity(page)).toHaveValue("Monthly");
+  await editCell(page, 0, 0, "2026-Q1");
+  await expect(granularity(page)).toHaveValue("Quarterly");
+  expect(await background(page, 0, 0)).not.toBe(RED);
+  // Loosely typed periods are written properly.
+  await editCell(page, 1, 0, "2026-q2");
+  await expect(cell(page, 1, 0)).toHaveText("2026-Q2");
+  // Once there are periods, a different granularity is marked wrong, not adopted.
+  await editCell(page, 2, 0, "2026-5");
+  await expect(cell(page, 2, 0)).toHaveText("2026-05"); // 2026-5 is written as 2026-05
+  await expect(granularity(page)).toHaveValue("Quarterly");
+  await expect.poll(() => background(page, 2, 0)).toBe(RED);
+});
+
+test("duplicate periods show an error, and periods out of order can be sorted", async ({
+  page,
+}) => {
+  await modelMenu(page, "New series sheet");
+  await editCell(page, 0, 0, "2026-03");
+  await editCell(page, 0, 1, "30");
+  await editCell(page, 1, 0, "2026-01");
+  await editCell(page, 1, 1, "10");
+  await expect(page.getByText("Warning: your dates are out of order")).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "Duplicate" })).toHaveCount(0);
+
+  await editCell(page, 2, 0, "2026-03");
+  await expect(page.getByText("Duplicate period: 2026-03 (rows 1, 3)")).toBeVisible();
+
+  await page.getByRole("button", { name: "Sort now" }).click();
+  await expect(cell(page, 0, 0)).toHaveText("2026-01");
+  await expect(cell(page, 0, 1)).toHaveText("10"); // values move with their period
+  await expect(cell(page, 1, 0)).toHaveText("2026-03");
+  await expect(cell(page, 1, 1)).toHaveText("30");
+  await expect(page.getByText("Warning: your dates are out of order")).toHaveCount(0);
+  await expect(page.getByText("Duplicate period: 2026-03 (rows 2, 3)")).toBeVisible();
 });
 
 test("series sheets can have several value columns, renamed by double-clicking the header", async ({
@@ -508,4 +586,49 @@ test("GPU iterations can be set to 10,000,000 @gpu", async ({ page }) => {
   await configure(page, { gpu: "10000000" });
   await expect(page.getByText(/iterations must be/)).toHaveCount(0);
   await expect(page.getByTestId("calc-status")).toHaveText(/GPU [\d,]+ \/ 10,000,000/);
+});
+
+test("Ctrl+; fills in the next period on a series sheet", async ({ page }) => {
+  const month = (offset: number) => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+  await modelMenu(page, "New series sheet");
+
+  // With nothing above: the current month.
+  await cell(page, 0, 0).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("A1");
+  await page.keyboard.press("Control+;");
+  await expect(cell(page, 0, 0)).toHaveText(month(0));
+
+  // With periods above: the latest plus one, even from a value column of the row.
+  await cell(page, 1, 1).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("B2");
+  await page.keyboard.press("Control+;");
+  await expect(cell(page, 1, 0)).toHaveText(month(1));
+
+  // In the formula bar, it fills the draft for a time cell; Enter commits it.
+  await cell(page, 2, 0).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("A3");
+  await formulaBar(page).focus();
+  await page.keyboard.press("Control+;");
+  await expect(formulaBar(page)).toHaveValue(month(2));
+  await formulaBar(page).press("Enter");
+  await expect(cell(page, 2, 0)).toHaveText(month(2));
+});
+
+test("recalculation waits for a pause after a cell edit", async ({ page }) => {
+  await editCell(page, 0, 0, "=1+1");
+  // The edited cell shows what was typed until the debounced run (500 ms) reports.
+  await expect(cell(page, 0, 0)).toHaveText("=1+1");
+  await page.waitForTimeout(300);
+  await expect(cell(page, 0, 0)).toHaveText("=1+1");
+  await expect(cell(page, 0, 0)).toHaveText("2");
+
+  // A burst of edits runs once, with the last values.
+  await editCell(page, 0, 0, "=3");
+  await editCell(page, 1, 0, "=A1*2");
+  await expect(cell(page, 1, 0)).toHaveText("6");
+  await expect(cell(page, 0, 0)).toHaveText("3");
 });

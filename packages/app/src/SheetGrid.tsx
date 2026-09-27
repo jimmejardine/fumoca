@@ -1,5 +1,5 @@
 import { granularityOf } from "@fumoca/engine";
-import { PERIOD_COLUMN, type Sheet } from "@fumoca/storage";
+import { lastUsedRow, PERIOD_COLUMN, type Sheet, suggestPeriod } from "@fumoca/storage";
 import { useComputedColorScheme } from "@mantine/core";
 import {
   type CellTemplateProp,
@@ -125,6 +125,18 @@ function FormulaEditor({ column, save, close, val }: EditorType) {
     if (commit) save(text);
     else close();
   };
+  // Arrow Up commits like Enter, then moves up instead of down.
+  const finishUp = async (input: HTMLInputElement) => {
+    if (done.current) return;
+    done.current = true;
+    const grid = input.closest("revo-grid");
+    save(text, true); // save without RevoGrid moving focus down
+    close();
+    const focused = await grid?.getFocused();
+    if (!grid || !focused || focused.cell.y === 0) return;
+    const above = { x: focused.cell.x, y: focused.cell.y - 1 }; // on-screen rows, so filter-aware
+    await grid.setCellsFocus(above, above);
+  };
   return (
     <input
       className={classes.editor}
@@ -136,8 +148,14 @@ function FormulaEditor({ column, save, close, val }: EditorType) {
       onBlur={() => finish(true)}
       onKeyDown={(event) => {
         event.stopPropagation();
-        if (event.key === "Enter") finish(true);
-        else if (event.key === "Escape") finish(false);
+        // Arrow Down commits as Enter does, moving to the cell below.
+        if (event.key === "Enter" || event.key === "ArrowDown") {
+          event.preventDefault();
+          finish(true);
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          void finishUp(event.currentTarget);
+        } else if (event.key === "Escape") finish(false);
       }}
     />
   );
@@ -233,17 +251,35 @@ export function SheetGrid({
     [filtered],
   );
 
+  // The key handler is set up once per sheet; it reads the latest sheet and commit through refs.
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+
   useEffect(() => {
     const grid = gridRef.current;
     if (!grid) return;
     gridElements.set(sheet.id, grid);
 
-    // F2 opens the in-grid editor on the focused cell.
     const handleKeyDown = async (event: KeyboardEvent) => {
-      if (event.key !== "F2") return;
-      event.preventDefault();
-      const focused = await grid.getFocused();
-      if (focused?.column) await grid.setCellEdit(focused.cell.y, focused.column.prop);
+      // F2 opens the in-grid editor on the focused cell.
+      if (event.key === "F2") {
+        event.preventDefault();
+        const focused = await grid.getFocused();
+        if (focused?.column) await grid.setCellEdit(focused.cell.y, focused.column.prop);
+        return;
+      }
+      // Ctrl+; on a series sheet fills the focused row's period: the latest period above plus
+      // one, or the current period.
+      if (event.key === ";" && (event.ctrlKey || event.metaKey) && sheetRef.current.series) {
+        event.preventDefault();
+        const focused = await grid.getFocused();
+        const row = (focused?.model as Row | undefined)?.[ROW_KEY];
+        if (row === undefined) return;
+        const period = suggestPeriod(sheetRef.current, row + 1);
+        if (period) commitRef.current([{ address: `A${row + 1}`, text: period }]);
+      }
     };
     const listener = (event: KeyboardEvent) => void handleKeyDown(event);
     grid.addEventListener("keydown", listener);
@@ -253,8 +289,11 @@ export function SheetGrid({
     };
   }, [sheet.id]);
 
+  const granularity = sheet.series?.granularity;
   const source = useMemo(() => {
-    const rows: Row[] = Array.from({ length: ROW_COUNT }, (_, i) => ({ [ROW_KEY]: i }));
+    // Series sheets show their rows plus one empty row to type the next period into.
+    const rowCount = granularity ? lastUsedRow(sheet.cells) + 1 : ROW_COUNT;
+    const rows: Row[] = Array.from({ length: rowCount }, (_, i) => ({ [ROW_KEY]: i }));
     for (const [address, value] of Object.entries(sheet.cells)) {
       const position = cellPosition(address);
       const row = position ? rows[position.y] : undefined;
@@ -280,7 +319,6 @@ export function SheetGrid({
     }
     // Series sheets: every row with content needs a time value of the sheet's granularity
     // in column A (SPECS.md §5.2). Rows where it's missing or wrong show red.
-    const granularity = sheet.series?.granularity;
     if (granularity) {
       const rowsWithContent = new Set<number>();
       for (const address of Object.keys(sheet.cells)) {
@@ -293,7 +331,7 @@ export function SheetGrid({
       }
     }
     return rows;
-  }, [sheet.cells, sheet.series?.granularity, results, colorScheme]);
+  }, [sheet.cells, granularity, results, colorScheme]);
 
   const commit = (edits: CellEdit[]) => {
     const error = onCommit(edits);

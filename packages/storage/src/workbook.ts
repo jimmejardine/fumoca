@@ -1,4 +1,4 @@
-import { type CellInputs, GRANULARITIES, type Granularity, monthlyPeriods } from "@fumoca/engine";
+import { type CellInputs, GRANULARITIES, type Granularity } from "@fumoca/engine";
 
 /**
  * The model: one workbook holding several worksheets (SPECS.md §2). Only one workbook is open at a
@@ -56,20 +56,12 @@ export function createSheet(name: string, cells: CellInputs = {}, series?: Serie
     : { id: crypto.randomUUID(), name, cells };
 }
 
-/** Number of periods a new series sheet starts with. */
-export const DEFAULT_SERIES_PERIODS = 24;
-
 /**
- * A new time-series sheet with the defaults (SPECS.md §5.2): monthly, level, one value column
- * called "Value", 24 periods starting with the current month. Periods go down column A from row 1;
- * column names are shown as headers, not stored in cells.
+ * A new, empty time-series sheet (SPECS.md §5.2): monthly, level, one value column called
+ * "Value". The first period typed into an empty sheet sets its granularity.
  */
-export function createSeriesSheet(name: string, today = new Date()): Sheet {
-  const cells: CellInputs = {};
-  monthlyPeriods(today, DEFAULT_SERIES_PERIODS).forEach((period, i) => {
-    cells[`A${i + 1}`] = period;
-  });
-  return createSheet(name, cells, { granularity: "month", type: "level", columns: ["Value"] });
+export function createSeriesSheet(name: string): Sheet {
+  return createSheet(name, {}, { granularity: "month", type: "level", columns: ["Value"] });
 }
 
 /**

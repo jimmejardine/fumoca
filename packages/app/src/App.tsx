@@ -1,10 +1,11 @@
-import { FormulaSyntaxError, parseFormula } from "@fumoca/engine";
+import { FormulaSyntaxError, granularityOf, normalizePeriod, parseFormula } from "@fumoca/engine";
 import {
   addSeriesColumn,
   addSheet,
   createSeriesSheet,
   createWorkbook,
   FILE_EXTENSION,
+  hasNoPeriods,
   nextSheetName,
   parseWorkbook,
   renameSeriesColumn,
@@ -12,6 +13,8 @@ import {
   serializeWorkbook,
   setCell,
   setSeriesSettings,
+  sortSeriesSheet,
+  suggestPeriod,
   type Workbook,
 } from "@fumoca/storage";
 import { AppShell, Box, Divider, Text } from "@mantine/core";
@@ -42,6 +45,8 @@ const HEADER_HEIGHT = 116;
 
 /** Fixed seed, so recalculating the same model always gives the same results. */
 const SEED = 1;
+/** How long after a cell edit the recalculation waits, so a burst of edits runs once. */
+const EDIT_DEBOUNCE_MS = 500;
 
 /** The single open model (SPECS.md §2), where it was loaded from, and whether it has changed. */
 interface Document {
@@ -140,6 +145,8 @@ export function App() {
   const [selections, setSelections] = useState<Map<string, string>>(new Map());
   const apiRef = useRef<DockviewApi | null>(null);
   const docRef = useRef(doc);
+  // Workbooks produced by cell edits: their recalculation is debounced (SPECS.md §6.3).
+  const editedWorkbooks = useRef(new WeakSet<Workbook>());
   docRef.current = doc;
 
   useEffect(() => {
@@ -178,22 +185,34 @@ export function App() {
     setStatus("Calculating…");
     setStatusDetail(undefined);
     const workbook = doc.workbook;
-    const run = engine.run(
-      workbook,
-      effective,
-      SEED,
-      ({ recalculation, primaryIsGpu }) => {
-        setResults(recalculation.results);
-        const { status: text, detail } = describeStatus(recalculation, workbook, primaryIsGpu);
-        setStatus(text);
-        setStatusDetail(detail);
-      },
-      (message) => {
-        setStatus("Calculation failed");
-        showError("Calculation failed", new Error(message));
-      },
-    );
-    return () => run.cancel();
+    let run: { cancel: () => void } | undefined;
+    const start = () => {
+      editedWorkbooks.current.delete(workbook);
+      run = engine.run(
+        workbook,
+        effective,
+        SEED,
+        ({ recalculation, primaryIsGpu }) => {
+          setResults(recalculation.results);
+          const { status: text, detail } = describeStatus(recalculation, workbook, primaryIsGpu);
+          setStatus(text);
+          setStatusDetail(detail);
+        },
+        (message) => {
+          setStatus("Calculation failed");
+          showError("Calculation failed", new Error(message));
+        },
+      );
+    };
+    // After a cell edit, wait for a pause in typing; a newer edit restarts the wait. Anything else
+    // (loading a model, changing settings) recalculates at once.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (editedWorkbooks.current.has(workbook)) timer = setTimeout(start, EDIT_DEBOUNCE_MS);
+    else start();
+    return () => {
+      clearTimeout(timer);
+      run?.cancel();
+    };
   }, [doc.workbook, effective, engine]);
 
   const handleApplySettings = useCallback((next: EngineSettings) => {
@@ -272,7 +291,15 @@ export function App() {
    * Commits edits to a sheet. Rejects the whole commit if any formula has a syntax error (as
    * Excel does), returning the error message. Unchanged cells are ignored.
    */
-  const handleCommit = useCallback((sheetId: string, edits: CellEdit[]): string | null => {
+  const handleCommit = useCallback((sheetId: string, typed: CellEdit[]): string | null => {
+    // In a series sheet's time column, loosely typed periods are written properly (2026-7 →
+    // 2026-07), so they match the sheet's granularity and sort correctly.
+    const isSeries = docRef.current.workbook.sheets.find((s) => s.id === sheetId)?.series;
+    const edits = isSeries
+      ? typed.map((edit) =>
+          /^A[0-9]+$/.test(edit.address) ? { ...edit, text: normalizePeriod(edit.text) } : edit,
+        )
+      : typed;
     for (const { address, text } of edits) {
       const error = syntaxError(text);
       if (error) return edits.length === 1 ? error : `${address}: ${error}`;
@@ -284,14 +311,23 @@ export function App() {
       return next === "" ? previous !== undefined : previous !== next;
     });
     if (changed.length === 0) return null;
-    setDoc((d) => ({
-      ...d,
-      workbook: changed.reduce(
+    setDoc((d) => {
+      const before = d.workbook.sheets.find((s) => s.id === sheetId);
+      let workbook = changed.reduce(
         (wb, { address, text }) => setCell(wb, sheetId, address, parseCellInput(text)),
         d.workbook,
-      ),
-      dirty: true,
-    }));
+      );
+      // The first period typed into an empty series sheet sets its granularity.
+      if (before?.series && hasNoPeriods(before)) {
+        const first = changed.find(({ address }) => /^A[0-9]+$/.test(address));
+        const granularity = first ? granularityOf(parseCellInput(first.text)) : null;
+        if (granularity && granularity !== before.series.granularity) {
+          workbook = setSeriesSettings(workbook, sheetId, { ...before.series, granularity });
+        }
+      }
+      editedWorkbooks.current.add(workbook);
+      return { ...d, workbook, dirty: true };
+    });
     // Show what was typed straight away: the edited cells drop their stale results (the grid then
     // shows their input) until the new run reports.
     setResults((current) => {
@@ -326,6 +362,10 @@ export function App() {
       workbook: setSeriesSettings(d.workbook, sheetId, series),
       dirty: true,
     }));
+  }, []);
+
+  const handleSortSeries = useCallback((sheetId: string) => {
+    setDoc((d) => ({ ...d, workbook: sortSeriesSheet(d.workbook, sheetId), dirty: true }));
   }, []);
 
   const handleAddSeriesColumn = useCallback((sheetId: string) => {
@@ -369,6 +409,7 @@ export function App() {
       onSeriesSettingsChange: handleSeriesSettingsChange,
       onAddSeriesColumn: handleAddSeriesColumn,
       onRenameSeriesColumn: handleRenameSeriesColumn,
+      onSortSeries: handleSortSeries,
     }),
     [
       doc.workbook,
@@ -379,6 +420,7 @@ export function App() {
       handleSeriesSettingsChange,
       handleAddSeriesColumn,
       handleRenameSeriesColumn,
+      handleSortSeries,
     ],
   );
 
@@ -417,6 +459,11 @@ export function App() {
             if (activeSheet && selectedAddress) {
               void focusCellBelow(activeSheet.id, selectedAddress);
             }
+          }}
+          onFillPeriod={() => {
+            // Series sheets: Ctrl+; in a time cell suggests the next period (SPECS.md §5.2.1).
+            const row = /^A([0-9]+)$/.exec(selectedAddress ?? "")?.[1];
+            return activeSheet?.series && row ? suggestPeriod(activeSheet, Number(row)) : null;
           }}
         />
       </AppShell.Header>

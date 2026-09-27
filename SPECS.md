@@ -57,6 +57,7 @@ This document holds the detailed specifications for fumoca. For a high-level ove
   - **F2**, double-click or typing opens an editor in the cell itself.
   - F2 and double-click show the cell's raw formula or value; typing starts a new entry.
   - Enter commits and Escape cancels.
+  - Arrow Down commits like Enter and moves down; Arrow Up commits and moves up.
 - **Syntax errors are rejected:** a formula with a syntax error isn't committed, as in Excel. The formula bar shows the error, or a notification appears for in-grid edits, and the cell keeps its previous contents.
 - Standard spreadsheet behaviour is expected:
   - Select cells, move with the keyboard, edit in place and in a formula bar
@@ -225,7 +226,22 @@ A time-series worksheet contains **only series columns**. It has no free-form ce
 
 ### 5.2.1 Current implementation
 
-- **Creating one:** **Model → New series sheet** creates "SeriesN" with the defaults: monthly, type Level, one value column called "Value", 24 periods starting with the current month.
+- **Creating one:** **Model → New series sheet** creates an **empty** "SeriesN": monthly, type Level, one value column called "Value".
+- **First period sets the granularity:** while the time column is empty, the first period typed sets the sheet's granularity. For example, `2026-Q1` makes it Quarterly. After that, a period of another granularity is marked red rather than adopted.
+- **Loose periods are fixed as typed:** in the time column, `2026-7` becomes `2026-07`, `2026-q1` becomes `2026-Q1`, and `2026-3-5` becomes `2026-03-05`.
+- **Ctrl+; fills in a period:**
+  - **In the grid:** it fills the time cell of the focused row.
+  - **In the formula bar,** while editing a time cell: it fills the draft, and Enter commits it.
+  - **What it fills:**
+    - With no periods above that row: the current period (today, truncated to the sheet's granularity, e.g. `2026-09`, `2026-Q3`, `2026-W39`).
+    - Otherwise: the latest period above, plus one.
+- **Always one spare row:** the grid shows the used rows plus one empty row. Entering anything in it adds another.
+- **Problems are shown at the bottom of the sheet:**
+  - **Duplicate periods:** an error, on a pink background, naming the period and its rows.
+  - **Periods out of order:** a beige warning, "Warning: your dates are out of order", with a **Sort now** button.
+    - Sorting orders rows by period, ascending, and each row's values move with it.
+    - Rows without a valid period go last, and empty rows are removed.
+    - Formulas move unchanged, as in Excel.
 - **Model → New sheet** adds a standard sheet.
 - **Layout:** a series sheet has **no row numbers**. Its columns are headed by name: **Period** (the time column, column A) first, then the value columns (B, C, …).
   - Periods start at row 1.
@@ -451,6 +467,7 @@ This gives each variable any distribution it needs, while keeping the dependence
   - **Memory depends on the batch size, not the total**, so CPU and GPU iterations can each go up to 1,000,000,000.
   - The grid refreshes about 5 times a second while batches arrive, and the status shows progress, e.g. `GPU 350,000 / 1,000,000 · CPU 10,000 / 10,000 · agree so far`.
   - A model edit or settings change cancels the run and starts a new one.
+  - **Edits are debounced:** after a cell edit the new run waits for 500 ms without further edits; each edit restarts the wait, so a burst of edits runs once. The edited cells show what was typed straight away. Loading a model, sorting a series sheet, adding a sheet or changing settings recalculates at once.
   - **GPU batches:** the backend asks the adapter for its full storage-buffer limits. Its batch is the largest that fits one storage binding (outputs × iterations × 4 bytes), capped at 262,144, and the compiled pipeline is cached across batches.
   - **CPU batches:** 1,000 iterations per worker, and each worker receives the program once.
   - **The CPU–GPU comparison** (§6.7) runs incrementally over the first min(CPU, GPU, 100,000) iterations as both engines cover them.

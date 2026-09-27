@@ -1,4 +1,13 @@
 /** @fumoca/storage: storage provider interface and built-in providers. See SPECS.md §8. */
+
+export {
+  hasNoPeriods,
+  lastUsedRow,
+  type SeriesIssues,
+  seriesIssues,
+  sortSeriesSheet,
+  suggestPeriod,
+} from "./series";
 export {
   addSeriesColumn,
   addSheet,
@@ -6,7 +15,6 @@ export {
   createSeriesSheet,
   createSheet,
   createWorkbook,
-  DEFAULT_SERIES_PERIODS,
   FILE_EXTENSION,
   FILE_FORMAT,
   FILE_VERSION,

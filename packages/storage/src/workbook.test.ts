@@ -65,13 +65,10 @@ describe("adding sheets", () => {
 });
 
 describe("series sheets", () => {
-  it("start monthly, level, one Value column, 24 periods from the current month", () => {
-    const sheet = createSeriesSheet("Series1", new Date(2026, 10, 5));
+  it("start empty: monthly, level, one Value column", () => {
+    const sheet = createSeriesSheet("Series1");
     expect(sheet.series).toEqual({ granularity: "month", type: "level", columns: ["Value"] });
-    expect(sheet.cells.A1).toBe("2026-11");
-    expect(sheet.cells.A2).toBe("2026-12");
-    expect(sheet.cells.A24).toBe("2028-10");
-    expect(sheet.cells.A25).toBeUndefined();
+    expect(sheet.cells).toEqual({});
   });
 
   it("round-trip their settings and columns through a file", () => {

@@ -13,6 +13,8 @@ export interface FormulaBarProps {
   onCommit: (text: string) => string | null;
   /** Called after Enter commits, so focus can return to the grid. */
   onDone: () => void;
+  /** Ctrl+;: a period to fill in (series sheets' time cells), or null if there's nothing to fill. */
+  onFillPeriod?: (() => string | null) | undefined;
 }
 
 /**
@@ -26,6 +28,7 @@ export function FormulaBar({
   statusDetail,
   onCommit,
   onDone,
+  onFillPeriod,
 }: FormulaBarProps) {
   const [draft, setDraft] = useState(content);
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +88,13 @@ export function FormulaBar({
           } else if (event.key === "Escape") {
             setDraft(content);
             setError(null);
+          } else if (event.key === ";" && (event.ctrlKey || event.metaKey)) {
+            const period = onFillPeriod?.();
+            if (period) {
+              event.preventDefault();
+              setDraft(period);
+              setError(null);
+            }
           }
         }}
         onBlur={() => commit()}

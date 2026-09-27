@@ -33,6 +33,13 @@ export {
   type LookupTime,
   parseFormula,
 } from "./parser";
-export { GRANULARITIES, type Granularity, granularityOf, monthlyPeriods } from "./periods";
+export {
+  GRANULARITIES,
+  type Granularity,
+  granularityOf,
+  nextPeriod,
+  normalizePeriod,
+  periodContaining,
+} from "./periods";
 export { hash32, randomU32, standardNormal, toUnit, uniformUnit } from "./random";
 export { normalCdf, normalPdf } from "./special";

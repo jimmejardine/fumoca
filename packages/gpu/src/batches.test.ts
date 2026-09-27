@@ -30,6 +30,8 @@ describe("GPU batches", () => {
         () => {},
       );
     const final = await run();
+    // The summary shaders compile in the background; the run may finish before they do.
+    await gpu.prepare(program, outputs);
     // Running the same program again reuses the raw-sample, summary and merge pipelines.
     const compiled = gpu.pipelinesCompiled;
     await run();
