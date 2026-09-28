@@ -488,6 +488,104 @@ test("copied and filled formulas shift their references, as in Excel", async ({
   await expect(formulaBar(page)).toHaveValue("=A4*10");
 });
 
+test("scenarios are created from the side panel, and defined by clicking cells", async ({
+  page,
+}) => {
+  await editCell(page, 0, 0, "2"); // A1
+  await editCell(page, 1, 0, "5"); // A2
+  await editCell(page, 0, 1, "=A1*10 + A2"); // B1
+
+  await page.getByRole("tab", { name: "Scenarios" }).click();
+  await page.getByRole("button", { name: "New scenario" }).click();
+  await expect(tabs(page).filter({ hasText: "Scenario1" })).toHaveCount(1);
+  await expect(
+    page.getByRole("navigation", { name: "Scenarios" }).getByText("Scenario1"),
+  ).toBeVisible();
+  const name = page.getByLabel("Scenario name");
+  await name.fill("Rates");
+  await name.press("Enter");
+  await expect(tabs(page).filter({ hasText: "Rates" })).toHaveCount(1);
+
+  // A single-cell dimension: its new picker has focus, so clicking A1 picks it.
+  await page.getByRole("button", { name: "Single cell" }).click();
+  const dimensionCell = page.getByLabel("Dimension cell");
+  await expect(dimensionCell).toBeFocused();
+  await cell(page, 0, 0).click();
+  await expect(dimensionCell).toHaveValue("Sheet1!A1");
+  await expect(page.getByText("Baseline: 2")).toBeVisible();
+  for (const [i, value] of ["3", "4"].entries()) {
+    await page.getByRole("button", { name: "Alternative", exact: true }).click();
+    await page.getByLabel(`Alternative ${i + 1}`, { exact: true }).fill(value);
+    await page.getByLabel(`Alternative ${i + 1}`, { exact: true }).press("Enter");
+  }
+
+  // A group of one cell (A2) with two variants.
+  await page.getByRole("button", { name: "Group", exact: true }).click();
+  await page.getByRole("button", { name: "Cell", exact: true }).click();
+  await expect(page.getByLabel("Group cell 1", { exact: true })).toBeFocused();
+  await cell(page, 1, 0).click();
+  await expect(page.getByLabel("Group cell 1", { exact: true })).toHaveValue("Sheet1!A2");
+  await page.getByRole("button", { name: "Variant", exact: true }).click();
+  await page.getByRole("button", { name: "Variant", exact: true }).click();
+  await page.getByLabel("Variant 1 cell 1").fill("50");
+  await page.getByLabel("Variant 1 cell 1").press("Enter");
+
+  // The output: typed rather than clicked.
+  await page.getByRole("button", { name: "Output", exact: true }).click();
+  await page.getByLabel("Output 1", { exact: true }).fill("sheet1!b1");
+  await page.getByLabel("Output 1", { exact: true }).press("Enter");
+  await expect(page.getByLabel("Output 1", { exact: true })).toHaveValue("Sheet1!B1");
+
+  await expect(page.getByTestId("combination-count")).toHaveText(
+    "2 × 2 = 4 combinations, plus the Baseline",
+  );
+  // Picking cells didn't change the grid's selection or contents.
+  await expect(cell(page, 0, 1)).toHaveText("25");
+  await expect(title(page)).toHaveText("Untitled •");
+
+  // Run it: B1 = A1 * 10 + A2, with A1 in {3, 4} down the rows and the group across.
+  await page.getByRole("button", { name: "Run scenario" }).click();
+  await expect(page.getByTestId("scenario-progress")).toHaveText(
+    "Ran the Baseline and 4 combinations",
+  );
+  const pivot = page.getByTestId("scenario-pivot");
+  const values = () => pivot.locator("tbody button").allTextContents();
+  await expect.poll(values).toEqual(["80", "35", "90", "45"]);
+  await expect(page.getByText("Baseline: Sheet1!B1 = 25")).toBeVisible();
+
+  // All dimensions down the rows: one row per combination.
+  await page.locator(`[data-field="Group1"]`).getByText("Group1").click();
+  await page.getByRole("menuitem", { name: "Rows" }).click();
+  await expect(pivot.locator("tbody tr")).toHaveCount(4);
+  await expect.poll(values).toEqual(["80", "35", "90", "45"]);
+  // Sorted by the output, largest first.
+  await pivot.getByRole("button", { name: "Sort by column 1" }).click();
+  await pivot.getByRole("button", { name: "Sort by column 1" }).click();
+  await expect.poll(values).toEqual(["90", "80", "45", "35"]);
+
+  // The group as a filter, pooled: each row mixes both variants (still sorted, largest first).
+  await page.locator(`[data-field="Group1"]`).getByText("Group1").click();
+  await page.getByRole("menuitem", { name: "Filters" }).click();
+  await page.getByRole("combobox", { name: "Group1 filter" }).click();
+  await page.getByRole("option", { name: "All (pooled)" }).click();
+  await expect
+    .poll(values)
+    .toEqual([expect.stringMatching(/^6[78] ± 2[23]$/), expect.stringMatching(/^5[78] ± 2[23]$/)]);
+
+  // Compared with the Baseline (25).
+  await page.getByRole("combobox", { name: "Group1 filter" }).click();
+  await page.getByRole("option", { name: "Variant 1" }).click();
+  await page.getByRole("switch", { name: "Compare with Baseline" }).click({ force: true });
+  await expect.poll(values).toEqual(["+65 (+260.0%)", "+55 (+220.0%)"]);
+
+  // Editing the model marks the results as out of date.
+  await tabs(page).filter({ hasText: "Sheet1" }).click();
+  await editCell(page, 2, 0, "1");
+  await expect(
+    page.getByText("The model or the scenario has changed since this run."),
+  ).toBeVisible();
+});
+
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {
   await editCell(page, 0, 0, "=FOO(1)");
   await editCell(page, 1, 0, "=A1 + 1");

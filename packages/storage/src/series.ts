@@ -63,6 +63,7 @@ export function seriesIssues(sheet: Sheet): SeriesIssues {
  */
 export function sortSeriesSheet(workbook: Workbook, sheetId: string): Workbook {
   return {
+    ...workbook,
     sheets: workbook.sheets.map((sheet) => {
       if (sheet.id !== sheetId || !sheet.series) return sheet;
       const granularity = sheet.series.granularity;

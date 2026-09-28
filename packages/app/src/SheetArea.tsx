@@ -1,4 +1,4 @@
-import type { SeriesSettings, Workbook } from "@fumoca/storage";
+import type { Scenario, SeriesSettings, Workbook } from "@fumoca/storage";
 import { Box, Center, Stack, Text, useComputedColorScheme } from "@mantine/core";
 import {
   type DockviewApi,
@@ -10,6 +10,8 @@ import {
 import { createContext, useContext, useState } from "react";
 import { RenameColumnModal } from "./RenameColumnModal";
 import type { WorkbookResults } from "./recalc";
+import { ScenarioPanel } from "./ScenarioPanel";
+import { ScenarioControls, ScenarioResultsView, type ScenarioRunState } from "./ScenarioResults";
 import { SeriesIssuesBar } from "./SeriesIssuesBar";
 import { SeriesToolbar } from "./SeriesToolbar";
 import { type CellEdit, SheetGrid } from "./SheetGrid";
@@ -30,6 +32,12 @@ export interface SheetAreaContextValue {
   onAddSeriesColumn: (sheetId: string) => void;
   onRenameSeriesColumn: (sheetId: string, index: number, name: string) => void;
   onSortSeries: (sheetId: string) => void;
+  /** Saves changes to a scenario's definition. */
+  onScenarioChange: (scenario: Scenario) => void;
+  /** Each scenario's latest run, by scenario id. */
+  scenarioRuns: Map<string, ScenarioRunState>;
+  onRunScenario: (scenarioId: string) => void;
+  onStopScenario: () => void;
   /** The selected cell's dependencies to outline, by sheet id: colour by address. */
   dependencies: Map<string, Map<string, string>>;
 }
@@ -81,13 +89,63 @@ function Watermark() {
   return (
     <Center h="100%">
       <Text c="dimmed" size="sm">
-        No sheet open. Choose one from the Sheets list.
+        Nothing open. Choose a sheet or a scenario from the side panel.
       </Text>
     </Center>
   );
 }
 
-const COMPONENTS = { sheet: SheetPanel };
+interface ScenarioPanelParams {
+  scenarioId: string;
+}
+
+function ScenarioTab({ params }: IDockviewPanelProps<ScenarioPanelParams>) {
+  const context = useContext(SheetAreaContext);
+  const scenario = context?.workbook.scenarios?.find((s) => s.id === params.scenarioId);
+  if (!context || !scenario) return null;
+  const run = context.scenarioRuns.get(scenario.id);
+  return (
+    <ScenarioPanel
+      scenario={scenario}
+      workbook={context.workbook}
+      onChange={context.onScenarioChange}
+      controls={
+        <ScenarioControls
+          scenario={scenario}
+          workbook={context.workbook}
+          run={run}
+          onRun={() => context.onRunScenario(scenario.id)}
+          onStop={context.onStopScenario}
+        />
+      }
+      results={
+        run?.results ? (
+          <ScenarioResultsView workbook={context.workbook} run={run} results={run.results} />
+        ) : undefined
+      }
+    />
+  );
+}
+
+const COMPONENTS = { sheet: SheetPanel, scenario: ScenarioTab };
+
+/** Opens a scenario as a tab, or brings its existing tab to the front (SPECS.md §7). */
+export function openScenario(api: DockviewApi, scenario: Scenario): void {
+  const existing = api.getPanel(scenario.id);
+  if (existing) {
+    existing.api.setActive();
+    return;
+  }
+  // Beside the sheets, so cells can be clicked to pick them; with other scenarios, if any are open.
+  const other = api.panels.find((panel) => panel.api.component === "scenario");
+  api.addPanel<ScenarioPanelParams>({
+    id: scenario.id,
+    component: "scenario",
+    title: scenario.name,
+    params: { scenarioId: scenario.id },
+    position: other ? { referencePanel: other.id } : { direction: "right" },
+  });
+}
 
 /** Opens a sheet as a tab, or brings its existing tab to the front. */
 export function openSheet(api: DockviewApi, workbook: Workbook, sheetId: string): void {

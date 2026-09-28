@@ -1,5 +1,6 @@
 import { Button, Group, Menu, Text } from "@mantine/core";
 import {
+  IconArrowsSplit,
   IconDeviceFloppy,
   IconFile,
   IconFolderOpen,
@@ -17,6 +18,7 @@ export interface MenuBarProps {
   onLoad: () => void;
   onNewSheet: () => void;
   onNewSeriesSheet: () => void;
+  onNewScenario: () => void;
 }
 
 export function MenuBar({
@@ -28,6 +30,7 @@ export function MenuBar({
   onLoad,
   onNewSheet,
   onNewSeriesSheet,
+  onNewScenario,
 }: MenuBarProps) {
   return (
     <Group h={36} px="xs" gap="xs" wrap="nowrap" justify="space-between">
@@ -65,6 +68,9 @@ export function MenuBar({
             </Menu.Item>
             <Menu.Item leftSection={<IconTimeline size={16} />} onClick={onNewSeriesSheet}>
               New series sheet
+            </Menu.Item>
+            <Menu.Item leftSection={<IconArrowsSplit size={16} />} onClick={onNewScenario}>
+              New scenario
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>

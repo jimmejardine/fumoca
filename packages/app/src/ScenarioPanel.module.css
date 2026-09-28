@@ -1,0 +1,53 @@
+/* A scenario window: its definition on the left, its results on the right. */
+.panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.definition {
+  width: 340px;
+  flex: none;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.results {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.label {
+  width: 90px;
+  flex: none;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+}
+
+.group :global(td),
+.group :global(th) {
+  min-width: 110px;
+  vertical-align: top;
+}
+
+.footer {
+  border-top: 1px solid var(--mantine-color-default-border);
+  padding-top: var(--mantine-spacing-xs);
+}
+
+.group :global(td:first-child),
+.group :global(th:first-child) {
+  min-width: 150px;
+}
+
+.collapsed {
+  flex: none;
+  width: 36px;
+  padding-top: var(--mantine-spacing-xs);
+  display: flex;
+  justify-content: center;
+  border-right: 1px solid var(--mantine-color-default-border);
+}

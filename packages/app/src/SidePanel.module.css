@@ -1,0 +1,29 @@
+/* Tabs down the panel's left edge, each named sideways, reading bottom to top. */
+.tabs {
+  display: flex;
+  height: 100%;
+}
+
+.list {
+  flex: none;
+}
+
+.tab {
+  gap: 6px;
+  padding: 12px 6px;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+/* The icon turns with the text, on the same line. */
+.tab :global(.mantine-Tabs-tabSection) {
+  transform: rotate(90deg);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}

@@ -102,7 +102,7 @@ function summarize(
 }
 
 /** The engine's view of a workbook's sheets, including series columns for lookups. */
-function sheetInputs(workbook: Workbook): SheetInput[] {
+export function sheetInputs(workbook: Pick<Workbook, "sheets">): SheetInput[] {
   return workbook.sheets.map(({ name, cells, series }) =>
     series
       ? { name, cells, series: { granularity: series.granularity, columns: series.columns } }

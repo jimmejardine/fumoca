@@ -817,6 +817,55 @@ That gives 2 × 3 = **6 combinations**.
 - **Applying a combination (proposed):** writes that combination's alternatives into the input cells, with undo.
 - **Export:** results can be exported to CSV.
 
+### 7.4.1 Current implementation
+
+**Where scenarios live**
+- The left-hand side panel has tabs down its left edge: **Sheets** (with *New sheet* and *New series sheet* buttons above the list) and **Scenarios** (with a *New scenario* button above the list, and a menu per scenario to delete it). More tabs can join later. *Model → New scenario* does the same.
+- **A scenario is a dockable window, like a sheet.** It opens beside the sheets, so their cells can be clicked while it's defined.
+- Scenarios are saved in the workbook file. Cells are referred to by sheet name, since sheet ids are regenerated on load. Older files load with no scenarios.
+
+**The scenario window**
+- **The definition runs down the left:**
+  - the scenario's name;
+  - its dimensions;
+  - its outputs;
+  - the combination count (for example "3 × 2 = 6 combinations, plus the Baseline", in orange above 1,000);
+  - the samples per combination (10,000 by default);
+  - *Run scenario* / *Stop*, with progress.
+
+  The definition can be hidden, so the results take the whole window.
+- **A single-cell dimension** has:
+  - a cell;
+  - the cell's current contents, shown as the Baseline;
+  - a list of alternatives, each an optional label and a value, formula or distribution.
+- **A group dimension** has a name, and a small table of cells (rows) × named variants (columns). A blank entry leaves that cell unchanged in that variant.
+- **Picking cells:** a cell field accepts a typed reference with its sheet (`Sheet1!B3`, `'Option pricing'!B4`). While it has focus, clicking a cell in any open sheet fills it in, using point mode (§6.1). A cell used by two dimensions is flagged.
+
+**Running**
+- *Run scenario* runs the Baseline, then each combination in turn, each for the set number of samples.
+  - It uses one engine: the GPU when it's available and enabled, otherwise the CPU worker pool.
+  - Only the output cells are evaluated.
+  - A combination is the workbook with its alternatives written over the input cells. The workbook itself never changes.
+- **Common random numbers:** a distribution's random stream is named by its cell (the sheet name and address) and its position in the formula, not by compile order. Cells a combination doesn't override draw exactly the same numbers in every combination.
+- **The grid waits:** a running scenario takes the engine, and the grid's recalculation waits until it finishes or is stopped. The status reads "Running a scenario…".
+- Results arrive live, combination by combination. If the model or the scenario changes after a run, the results stay and are marked as out of date until it runs again.
+
+**Results: a pivot of distributions**
+- **Fields:** each dimension that ran, plus **Output**.
+- **Zones:** each field sits in **Rows**, **Columns** or **Filters**. Fields are dragged between zones, or moved with each field's menu.
+- **Filters:** a filter shows one alternative, or **All (pooled)**, which merges every alternative's results into a mixture. Counts, means and variances merge exactly; histograms are re-binned onto their common range. The Output filter can't be pooled.
+- **Default layout:**
+  - the first dimension on the rows;
+  - the second on the columns;
+  - further dimensions as filters at their first alternative;
+  - Output on the columns when there's one output (or one dimension), otherwise as a filter.
+- **Each cell** shows mean ± SD over a faint histogram, like an uncertain grid cell.
+- **Clicking a cell** opens its detail: a larger histogram, the mean, SD, P10/P50/P90 (from the histogram) and the sample count.
+- **Sorting:** each column sorts the rows, ascending then descending. With every dimension on the rows, the pivot is the flat one-row-per-combination table.
+- **Compare with Baseline** shows each cell's change from the Baseline, absolute and as a percentage, shaded green for up and red for down.
+- The Baseline's outputs are listed above the table.
+- **Not yet built:** comparison charts, CSV export, viewing a combination in the grid, applying a combination, settling per combination, and running all combinations in one GPU kernel.
+
 ### 7.5 Sensitivity analysis
 
 Sensitivity analysis is a **special kind of scenario** that answers questions like:

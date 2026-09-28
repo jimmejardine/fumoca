@@ -1,0 +1,80 @@
+.view {
+  height: 100%;
+  min-height: 0;
+}
+
+.zones {
+  flex: none;
+}
+
+/* A drop zone for pivot fields. */
+.zone {
+  min-width: 110px;
+  min-height: 48px;
+  padding: 4px 6px;
+  border: 1px dashed var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
+.chip {
+  cursor: grab;
+}
+
+.chipLabel {
+  cursor: pointer;
+  text-transform: none;
+}
+
+.tableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.table {
+  width: auto;
+}
+
+.rowHeader {
+  white-space: nowrap;
+  background: var(--mantine-color-default-hover);
+}
+
+/* Mantine's table cells are padded with a highly specific selector. */
+.sortHeader {
+  /* biome-ignore lint/complexity/noImportantStyles: must override Mantine's table cell padding */
+  padding: 0 !important;
+}
+
+/* A pivot cell: mean ± SD over its histogram, like an uncertain grid cell. */
+.cell {
+  display: block;
+  width: 100%;
+  min-width: 120px;
+  height: 32px;
+  padding: 0 8px;
+  border: none;
+  font: inherit;
+  font-size: var(--mantine-font-size-sm);
+  color: inherit;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  background-color: transparent;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.cell[data-kind="error"] {
+  color: var(--mantine-color-red-6);
+}
+
+.cell[data-kind="pending"] {
+  color: var(--mantine-color-dimmed);
+}
+
+.detailHistogram {
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}

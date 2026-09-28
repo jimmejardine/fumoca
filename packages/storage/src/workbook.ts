@@ -1,4 +1,11 @@
 import { type CellInputs, GRANULARITIES, type Granularity } from "@fumoca/engine";
+import {
+  type CellInput,
+  type CellRef,
+  DEFAULT_SCENARIO_SAMPLES,
+  type Dimension,
+  type Scenario,
+} from "./scenario";
 
 /**
  * The model: one workbook holding several worksheets (SPECS.md §2). Only one workbook is open at a
@@ -33,6 +40,8 @@ export const PERIOD_COLUMN = "Period";
 
 export interface Workbook {
   sheets: Sheet[];
+  /** Named scenarios (SPECS.md §7). Absent means none. */
+  scenarios?: Scenario[];
 }
 
 /** File format identifier and version (SPECS.md §8.2). */
@@ -40,10 +49,33 @@ export const FILE_FORMAT = "fumoca";
 export const FILE_VERSION = 1;
 export const FILE_EXTENSION = ".fumoca";
 
+/** A cell reference in a file: sheets are named, since sheet ids exist only at runtime. */
+interface CellRefFile {
+  sheet: string;
+  address: string;
+}
+
+type DimensionFile =
+  | { kind: "cell"; cell: CellRefFile | null; alternatives: { label: string; input: CellInput }[] }
+  | {
+      kind: "group";
+      name: string;
+      cells: CellRefFile[];
+      variants: { label: string; inputs: (CellInput | null)[] }[];
+    };
+
+interface ScenarioFile {
+  name: string;
+  dimensions: DimensionFile[];
+  outputs: CellRefFile[];
+  samples: number;
+}
+
 interface WorkbookFileV1 {
   format: typeof FILE_FORMAT;
   version: typeof FILE_VERSION;
   sheets: { name: string; cells: CellInputs; series?: SeriesSettings }[];
+  scenarios?: ScenarioFile[];
 }
 
 export class WorkbookFormatError extends Error {
@@ -87,6 +119,7 @@ export function columnNameError(
 /** Returns a copy of the workbook with a new value column (Value2, Value3, …) on a series sheet. */
 export function addSeriesColumn(workbook: Workbook, sheetId: string): Workbook {
   return {
+    ...workbook,
     sheets: workbook.sheets.map((sheet) => {
       if (sheet.id !== sheetId || !sheet.series) return sheet;
       const series = sheet.series;
@@ -105,6 +138,7 @@ export function renameSeriesColumn(
   name: string,
 ): Workbook {
   return {
+    ...workbook,
     sheets: workbook.sheets.map((sheet) => {
       if (sheet.id !== sheetId || !sheet.series) return sheet;
       const columns = sheet.series.columns.map((column, i) => (i === index ? name.trim() : column));
@@ -120,6 +154,8 @@ export function setSeriesSettings(
   series: SeriesSettings,
 ): Workbook {
   return {
+    ...workbook,
+    ...workbook,
     sheets: workbook.sheets.map((sheet) => (sheet.id === sheetId ? { ...sheet, series } : sheet)),
   };
 }
@@ -142,7 +178,7 @@ export function addSheet(
   workbook: Workbook,
   sheet: Sheet = createSheet(nextSheetName(workbook)),
 ): { workbook: Workbook; sheet: Sheet } {
-  return { workbook: { sheets: [...workbook.sheets, sheet] }, sheet };
+  return { workbook: { ...workbook, sheets: [...workbook.sheets, sheet] }, sheet };
 }
 
 /** Returns a copy of the workbook with one cell changed. An empty value clears the cell. */
@@ -153,6 +189,7 @@ export function setCell(
   value: number | string,
 ): Workbook {
   return {
+    ...workbook,
     sheets: workbook.sheets.map((sheet) => {
       if (sheet.id !== sheetId) return sheet;
       const cells = { ...sheet.cells };
@@ -165,6 +202,15 @@ export function setCell(
 
 /** Serializes a workbook as a versioned JSON file. */
 export function serializeWorkbook(workbook: Workbook): string {
+  const names = new Map(workbook.sheets.map((sheet) => [sheet.id, sheet.name]));
+  const ref = ({ sheetId, address }: CellRef): CellRefFile => ({
+    sheet: names.get(sheetId) ?? "",
+    address,
+  });
+  const dimension = (d: Dimension): DimensionFile =>
+    d.kind === "cell"
+      ? { kind: "cell", cell: d.cell && ref(d.cell), alternatives: d.alternatives }
+      : { kind: "group", name: d.name, cells: d.cells.map(ref), variants: d.variants };
   const file: WorkbookFileV1 = {
     format: FILE_FORMAT,
     version: FILE_VERSION,
@@ -172,6 +218,14 @@ export function serializeWorkbook(workbook: Workbook): string {
       series ? { name, cells, series } : { name, cells },
     ),
   };
+  if (workbook.scenarios?.length) {
+    file.scenarios = workbook.scenarios.map((scenario) => ({
+      name: scenario.name,
+      dimensions: scenario.dimensions.map(dimension),
+      outputs: scenario.outputs.map(ref),
+      samples: scenario.samples,
+    }));
+  }
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
@@ -252,5 +306,106 @@ export function parseWorkbook(text: string): Workbook {
     }
     return createSheet(sheet.name, cells, parseSeries(sheet.series, sheet.name));
   });
-  return { sheets };
+  const scenarios = parseScenarios(data.scenarios, sheets);
+  return scenarios.length > 0 ? { sheets, scenarios } : { sheets };
+}
+
+const isInput = (value: unknown): value is CellInput =>
+  typeof value === "number" || typeof value === "string";
+
+/** Parses a file's scenarios, resolving sheet names to the loaded sheets' ids. */
+function parseScenarios(value: unknown, sheets: Sheet[]): Scenario[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new WorkbookFormatError("The scenarios are invalid");
+  const ids = new Map(sheets.map((sheet) => [sheet.name, sheet.id]));
+  return value.map((scenario: unknown, i: number) => {
+    if (!isRecord(scenario) || typeof scenario.name !== "string") {
+      throw new WorkbookFormatError(`Scenario ${i + 1} has no name`);
+    }
+    const name = scenario.name;
+    const invalid = (what: string) => new WorkbookFormatError(`Scenario "${name}" has ${what}`);
+    const ref = (cell: unknown): CellRef => {
+      if (!isRecord(cell) || typeof cell.sheet !== "string" || typeof cell.address !== "string") {
+        throw invalid("an invalid cell reference");
+      }
+      const sheetId = ids.get(cell.sheet);
+      if (!sheetId) throw invalid(`a reference to a missing sheet, ${cell.sheet}`);
+      return { sheetId, address: cell.address };
+    };
+    const dimension = (d: unknown): Dimension => {
+      if (isRecord(d) && d.kind === "cell" && Array.isArray(d.alternatives)) {
+        return {
+          id: crypto.randomUUID(),
+          kind: "cell",
+          cell: d.cell === null || d.cell === undefined ? null : ref(d.cell),
+          alternatives: d.alternatives.map((a: unknown) => {
+            if (!isRecord(a) || !isInput(a.input)) throw invalid("an invalid alternative");
+            return { label: typeof a.label === "string" ? a.label : "", input: a.input };
+          }),
+        };
+      }
+      if (
+        isRecord(d) &&
+        d.kind === "group" &&
+        Array.isArray(d.cells) &&
+        Array.isArray(d.variants)
+      ) {
+        const cells = d.cells.map(ref);
+        return {
+          id: crypto.randomUUID(),
+          kind: "group",
+          name: typeof d.name === "string" ? d.name : "Group",
+          cells,
+          variants: d.variants.map((v: unknown) => {
+            if (!isRecord(v) || typeof v.label !== "string" || !Array.isArray(v.inputs)) {
+              throw invalid("an invalid variant");
+            }
+            const inputs = v.inputs as unknown[];
+            return {
+              label: v.label,
+              inputs: cells.map((_, c) => {
+                const input = inputs[c];
+                return isInput(input) ? input : null;
+              }),
+            };
+          }),
+        };
+      }
+      throw invalid("an invalid dimension");
+    };
+    const dimensions = (Array.isArray(scenario.dimensions) ? scenario.dimensions : []).map(
+      dimension,
+    );
+    const outputs = (Array.isArray(scenario.outputs) ? scenario.outputs : []).map(ref);
+    const samples =
+      typeof scenario.samples === "number" && scenario.samples > 0
+        ? Math.floor(scenario.samples)
+        : DEFAULT_SCENARIO_SAMPLES;
+    return { id: crypto.randomUUID(), name, dimensions, outputs, samples };
+  });
+}
+
+/** The first free scenario name of the form "Scenario1", "Scenario2", … */
+export function nextScenarioName(workbook: Workbook): string {
+  const names = new Set((workbook.scenarios ?? []).map((scenario) => scenario.name));
+  for (let n = 1; ; n++) {
+    if (!names.has(`Scenario${n}`)) return `Scenario${n}`;
+  }
+}
+
+/** Returns a copy of the workbook with a scenario added, or replaced if one has its id. */
+export function putScenario(workbook: Workbook, scenario: Scenario): Workbook {
+  const scenarios = workbook.scenarios ?? [];
+  const exists = scenarios.some((s) => s.id === scenario.id);
+  return {
+    ...workbook,
+    scenarios: exists
+      ? scenarios.map((s) => (s.id === scenario.id ? scenario : s))
+      : [...scenarios, scenario],
+  };
+}
+
+/** Returns a copy of the workbook without a scenario. */
+export function removeScenario(workbook: Workbook, scenarioId: string): Workbook {
+  return { ...workbook, scenarios: (workbook.scenarios ?? []).filter((s) => s.id !== scenarioId) };
 }

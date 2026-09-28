@@ -1,6 +1,7 @@
 import type { BinaryFn, DistKind, Op, Program, Reg, UnaryFn } from "./ir";
 import { type BinaryOperator, type Expr, type LookupTime, parseFormula } from "./parser";
 import { type Granularity, granularityOf } from "./periods";
+import { hash32 } from "./random";
 
 /** Cell contents keyed by address: a number, or formula text starting with "=". */
 export type CellInputs = Record<string, number | string>;
@@ -128,6 +129,15 @@ function parseCell(input: number | string): Expr | null {
   const value = Number(input);
   if (input.trim() === "" || Number.isNaN(value)) return null;
   return { type: "number", value };
+}
+
+/** A 32-bit FNV-1a hash of a cell's sheet name and address: the base of its random streams. */
+function streamBase(sheetName: string, address: string): number {
+  let hash = 0x811c9dc5;
+  for (const char of `${sheetName.toLowerCase()}!${address}`) {
+    hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 0x01000193) >>> 0;
+  }
+  return hash;
 }
 
 /**
@@ -341,6 +351,14 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
   const cells = new Map<string, Reg>();
   let streamCount = 0;
   let zero: Reg | undefined;
+  // Each distribution call's random stream is named by its cell and its position in the formula,
+  // not by compile order, so a cell's draws don't change when other cells do. Scenarios rely on
+  // this for common random numbers (SPECS.md §7.3).
+  let cellStreams = { base: 0, next: 0 };
+  const nextStream = (): number => {
+    streamCount++;
+    return hash32((cellStreams.base + Math.imul(cellStreams.next++, 0x9e3779b9)) >>> 0);
+  };
 
   const emit = (op: Op): Reg => ops.push(op) - 1;
 
@@ -407,14 +425,14 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     if (distribution) {
       arity(distribution.arity);
       const regs = args.map((_, i) => arg(i));
-      return emit({ kind: "dist", dist: distribution.dist, args: regs, stream: streamCount++ });
+      return emit({ kind: "dist", dist: distribution.dist, args: regs, stream: nextStream() });
     }
     switch (name) {
       case "RAND": {
         arity(0);
         const lo = emit({ kind: "const", value: 0 });
         const hi = emit({ kind: "const", value: 1 });
-        return emit({ kind: "dist", dist: "uniform", args: [lo, hi], stream: streamCount++ });
+        return emit({ kind: "dist", dist: "uniform", args: [lo, hi], stream: nextStream() });
       }
       case "NORM.S.DIST": {
         // Excel: NORM.S.DIST(z, cumulative) is Φ(z) when cumulative is TRUE, else φ(z).
@@ -474,6 +492,8 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     if (!expr) continue;
     const mark = ops.length;
     const streamMark = streamCount;
+    const { address } = splitCellKey(key);
+    cellStreams = { base: streamBase(sheets[sheetIndex]?.name ?? "", address), next: 0 };
     try {
       cells.set(key, emitExpr(expr, sheetIndex));
     } catch (error) {

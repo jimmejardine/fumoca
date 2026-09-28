@@ -1,7 +1,8 @@
 import cpuWorkerUrl from "@fumoca/sim/worker?worker&url";
-import type { Workbook } from "@fumoca/storage";
+import type { Scenario, Workbook } from "@fumoca/storage";
 import type { EngineSettings } from "../engineSettings";
 import type { Recalculation } from "../recalc";
+import type { ScenarioResults } from "../scenarioRun";
 import type { EngineRequest, EngineResponse } from "./protocol";
 
 export interface EngineUpdate {
@@ -15,7 +16,8 @@ export interface EngineRun {
 }
 
 interface Listener {
-  onUpdate: (update: EngineUpdate) => void;
+  onUpdate?: (update: EngineUpdate) => void;
+  onScenarioUpdate?: (results: ScenarioResults) => void;
   onError: (message: string) => void;
 }
 
@@ -50,8 +52,13 @@ export class EngineClient {
         listener.onError(data.message);
         return;
       }
+      if (data.type === "scenarioUpdate") {
+        if (data.results.complete) this.listeners.delete(data.runId);
+        listener.onScenarioUpdate?.(data.results);
+        return;
+      }
       if (data.recalculation.complete) this.listeners.delete(data.runId);
-      listener.onUpdate({ recalculation: data.recalculation, primaryIsGpu: data.primaryIsGpu });
+      listener.onUpdate?.({ recalculation: data.recalculation, primaryIsGpu: data.primaryIsGpu });
     };
   }
 
@@ -67,6 +74,30 @@ export class EngineClient {
     this.listeners.clear(); // earlier runs are superseded
     this.listeners.set(runId, { onUpdate, onError });
     this.post({ type: "run", runId, workbook, settings, seed });
+    return {
+      cancel: () => {
+        if (!this.listeners.delete(runId)) return;
+        this.post({ type: "cancel", runId });
+      },
+    };
+  }
+
+  /**
+   * Runs a scenario's Baseline and combinations (SPECS.md §7.3). Like `run`, it supersedes any
+   * earlier run, including the grid's recalculation.
+   */
+  runScenario(
+    workbook: Workbook,
+    scenario: Scenario,
+    settings: EngineSettings,
+    seed: number,
+    onUpdate: (results: ScenarioResults) => void,
+    onError: (message: string) => void,
+  ): EngineRun {
+    const runId = this.nextRunId++;
+    this.listeners.clear();
+    this.listeners.set(runId, { onScenarioUpdate: onUpdate, onError });
+    this.post({ type: "runScenario", runId, workbook, scenario, settings, seed });
     return {
       cancel: () => {
         if (!this.listeners.delete(runId)) return;

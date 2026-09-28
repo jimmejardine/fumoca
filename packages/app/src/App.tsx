@@ -2,13 +2,18 @@ import { granularityOf, normalizePeriod } from "@fumoca/engine";
 import {
   addSeriesColumn,
   addSheet,
+  createScenario,
   createSeriesSheet,
   createWorkbook,
   FILE_EXTENSION,
   hasNoPeriods,
+  nextScenarioName,
   nextSheetName,
   parseWorkbook,
+  putScenario,
+  removeScenario,
   renameSeriesColumn,
+  type Scenario,
   type SeriesSettings,
   serializeWorkbook,
   setCell,
@@ -36,9 +41,10 @@ import { openTextFile, saveTextFile, type WorkbookFile } from "./files";
 import { MenuBar } from "./MenuBar";
 import { currentDraft, subscribeDraft } from "./pointing";
 import type { Recalculation, WorkbookResults } from "./recalc";
-import { openSheet, SheetArea, SheetAreaContext, showWorkbook } from "./SheetArea";
+import { emptyRun, type ScenarioRunState } from "./ScenarioResults";
+import { openScenario, openSheet, SheetArea, SheetAreaContext, showWorkbook } from "./SheetArea";
 import { type CellEdit, focusCellBelow } from "./SheetGrid";
-import { SheetList } from "./SheetList";
+import { SidePanel } from "./SidePanel";
 import { Toolbar } from "./Toolbar";
 import { createTestWorkbook } from "./testModel";
 
@@ -130,13 +136,18 @@ export function App() {
   const [gpuAvailable, setGpuAvailable] = useState<boolean | undefined>(undefined);
   const [results, setResults] = useState<WorkbookResults>(new Map());
   const [status, setStatus] = useState("Starting…");
+  // Scenario runs (SPECS.md §7.3), by scenario id. A running scenario takes the engine, and the
+  // grid's recalculation waits for it.
+  const [scenarioRuns, setScenarioRuns] = useState<Map<string, ScenarioRunState>>(new Map());
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+  const scenarioRunRef = useRef<{ scenarioId: string; cancel: () => void } | null>(null);
   const [statusDetail, setStatusDetail] = useState<string | undefined>(undefined);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const [selections, setSelections] = useState<Map<string, string>>(new Map());
   const apiRef = useRef<DockviewApi | null>(null);
   const docRef = useRef(doc);
   // Workbooks produced by cell edits: their recalculation is debounced (SPECS.md §6.3).
-  const editedWorkbooks = useRef(new WeakSet<Workbook>());
+  const editedWorkbooks = useRef(new WeakSet<Workbook["sheets"]>());
   docRef.current = doc;
 
   useEffect(() => {
@@ -168,16 +179,23 @@ export function App() {
     };
   }, [gpuAvailable, settings]);
 
-  // Recalculate whenever the model or settings change. The run goes in batches, and the grid
-  // updates as they arrive (SPECS.md §6.3); a newer run cancels the one before.
+  // Recalculate whenever the sheets or settings change (scenario edits don't affect the grid). The
+  // run goes in batches, and the grid updates as they arrive (SPECS.md §6.3); a newer run cancels
+  // the one before.
+  const sheets = doc.workbook.sheets;
   useEffect(() => {
     if (!engine || !effective) return;
+    if (scenarioBusy) {
+      setStatus("Running a scenario…");
+      setStatusDetail(undefined);
+      return;
+    }
     setStatus("Calculating…");
     setStatusDetail(undefined);
-    const workbook = doc.workbook;
+    const workbook: Workbook = { sheets };
     let run: { cancel: () => void } | undefined;
     const start = () => {
-      editedWorkbooks.current.delete(workbook);
+      editedWorkbooks.current.delete(sheets);
       run = engine.run(
         workbook,
         effective,
@@ -197,13 +215,13 @@ export function App() {
     // After a cell edit, wait for a pause in typing; a newer edit restarts the wait. Anything else
     // (loading a model, changing settings) recalculates at once.
     let timer: ReturnType<typeof setTimeout> | undefined;
-    if (editedWorkbooks.current.has(workbook)) timer = setTimeout(start, EDIT_DEBOUNCE_MS);
+    if (editedWorkbooks.current.has(sheets)) timer = setTimeout(start, EDIT_DEBOUNCE_MS);
     else start();
     return () => {
       clearTimeout(timer);
       run?.cancel();
     };
-  }, [doc.workbook, effective, engine]);
+  }, [sheets, effective, engine, scenarioBusy]);
 
   const handleApplySettings = useCallback((next: EngineSettings) => {
     setSettings(next);
@@ -312,7 +330,7 @@ export function App() {
           workbook = setSeriesSettings(workbook, sheetId, { ...before.series, granularity });
         }
       }
-      editedWorkbooks.current.add(workbook);
+      editedWorkbooks.current.add(workbook.sheets);
       return { ...d, workbook, dirty: true };
     });
     // Show what was typed straight away: the edited cells drop their stale results (the grid then
@@ -386,6 +404,105 @@ export function App() {
     if (apiRef.current) openSheet(apiRef.current, docRef.current.workbook, sheetId);
   }, []);
 
+  // Scenarios (SPECS.md §7) are saved with the workbook and open as tabs, like sheets.
+  const handleOpenScenario = useCallback((scenarioId: string) => {
+    const scenario = docRef.current.workbook.scenarios?.find((s) => s.id === scenarioId);
+    if (apiRef.current && scenario) openScenario(apiRef.current, scenario);
+  }, []);
+
+  const handleNewScenario = useCallback(() => {
+    const scenario = createScenario(nextScenarioName(docRef.current.workbook));
+    setDoc((d) => ({ ...d, workbook: putScenario(d.workbook, scenario), dirty: true }));
+    if (apiRef.current) openScenario(apiRef.current, scenario);
+  }, []);
+
+  const handleScenarioChange = useCallback((scenario: Scenario) => {
+    setDoc((d) => ({ ...d, workbook: putScenario(d.workbook, scenario), dirty: true }));
+    apiRef.current?.getPanel(scenario.id)?.api.setTitle(scenario.name);
+  }, []);
+
+  const setScenarioRun = useCallback(
+    (scenarioId: string, update: (run: ScenarioRunState | undefined) => ScenarioRunState) =>
+      setScenarioRuns((runs) => new Map(runs).set(scenarioId, update(runs.get(scenarioId)))),
+    [],
+  );
+
+  const handleStopScenario = useCallback(() => {
+    const current = scenarioRunRef.current;
+    if (!current) return;
+    current.cancel();
+    scenarioRunRef.current = null;
+    setScenarioRun(current.scenarioId, (run) => ({ ...(run ?? emptyRun()), running: false }));
+    setScenarioBusy(false);
+  }, [setScenarioRun]);
+
+  const handleRunScenario = useCallback(
+    (scenarioId: string) => {
+      const workbook = docRef.current.workbook;
+      const scenario = workbook.scenarios?.find((s) => s.id === scenarioId);
+      if (!engine || !effective || !scenario) return;
+      handleStopScenario();
+      setScenarioRun(scenarioId, () => ({
+        definition: scenario,
+        sheets: workbook.sheets,
+        results: null,
+        running: true,
+      }));
+      setScenarioBusy(true);
+      const finish = () => {
+        if (scenarioRunRef.current?.scenarioId !== scenarioId) return;
+        scenarioRunRef.current = null;
+        setScenarioBusy(false);
+      };
+      const run = engine.runScenario(
+        workbook,
+        scenario,
+        effective,
+        SEED,
+        (results) => {
+          setScenarioRun(scenarioId, (current) => ({
+            ...(current ?? emptyRun()),
+            results,
+            running: !results.complete,
+          }));
+          if (results.complete) finish();
+        },
+        (message) => {
+          setScenarioRun(scenarioId, (current) => ({
+            ...(current ?? emptyRun()),
+            running: false,
+            error: message,
+          }));
+          finish();
+          showError("The scenario failed", new Error(message));
+        },
+      );
+      scenarioRunRef.current = { scenarioId, cancel: run.cancel };
+    },
+    [engine, effective, handleStopScenario, setScenarioRun],
+  );
+
+  const handleDeleteScenario = useCallback((scenarioId: string) => {
+    const scenario = docRef.current.workbook.scenarios?.find((s) => s.id === scenarioId);
+    if (!scenario) return;
+    modals.openConfirmModal({
+      title: `Delete ${scenario.name}?`,
+      children: <Text size="sm">The scenario and its results will be deleted.</Text>,
+      labels: { confirm: "Delete", cancel: "Cancel" },
+      confirmProps: { color: "red" },
+      onConfirm: () => {
+        if (scenarioRunRef.current?.scenarioId === scenarioId) {
+          scenarioRunRef.current.cancel();
+          scenarioRunRef.current = null;
+          setScenarioBusy(false);
+        }
+        const panel = apiRef.current?.getPanel(scenarioId);
+        if (panel) apiRef.current?.removePanel(panel);
+        setDoc((d) => ({ ...d, workbook: removeScenario(d.workbook, scenarioId), dirty: true }));
+      },
+    });
+  }, []);
+
   // The dependencies of the formula being edited, or else of the selected cell, outlined in every
   // open sheet they're on (SPECS.md §6.5).
   const colorScheme = useComputedColorScheme("light");
@@ -410,6 +527,10 @@ export function App() {
       onAddSeriesColumn: handleAddSeriesColumn,
       onRenameSeriesColumn: handleRenameSeriesColumn,
       onSortSeries: handleSortSeries,
+      onScenarioChange: handleScenarioChange,
+      scenarioRuns,
+      onRunScenario: handleRunScenario,
+      onStopScenario: handleStopScenario,
       dependencies,
     }),
     [
@@ -423,6 +544,10 @@ export function App() {
       handleAddSeriesColumn,
       handleRenameSeriesColumn,
       handleSortSeries,
+      handleScenarioChange,
+      scenarioRuns,
+      handleRunScenario,
+      handleStopScenario,
     ],
   );
 
@@ -432,7 +557,7 @@ export function App() {
     activeSheet && selectedAddress ? formatCellInput(activeSheet.cells[selectedAddress]) : "";
 
   return (
-    <AppShell header={{ height: HEADER_HEIGHT }} navbar={{ width: 200, breakpoint: 0 }} padding={0}>
+    <AppShell header={{ height: HEADER_HEIGHT }} navbar={{ width: 240, breakpoint: 0 }} padding={0}>
       <AppShell.Header>
         <MenuBar
           config={{ settings, gpuAvailable: gpuAvailable === true, onApply: handleApplySettings }}
@@ -443,6 +568,7 @@ export function App() {
           onLoad={handleLoad}
           onNewSheet={handleNewSheet}
           onNewSeriesSheet={handleNewSeriesSheet}
+          onNewScenario={handleNewScenario}
         />
         <Divider />
         <Toolbar onLoadTestModel={handleLoadTestModel} />
@@ -471,10 +597,16 @@ export function App() {
         />
       </AppShell.Header>
       <AppShell.Navbar>
-        <SheetList
+        <SidePanel
           sheets={doc.workbook.sheets}
-          activeSheetId={activeSheetId}
-          onOpen={handleOpenSheet}
+          scenarios={doc.workbook.scenarios ?? []}
+          activePanelId={activeSheetId}
+          onOpenSheet={handleOpenSheet}
+          onNewSheet={handleNewSheet}
+          onNewSeriesSheet={handleNewSeriesSheet}
+          onOpenScenario={handleOpenScenario}
+          onNewScenario={handleNewScenario}
+          onDeleteScenario={handleDeleteScenario}
         />
       </AppShell.Navbar>
       <AppShell.Main>
