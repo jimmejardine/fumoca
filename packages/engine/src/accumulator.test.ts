@@ -36,10 +36,10 @@ describe("CellAccumulator", () => {
       fc.property(
         fc.array(fc.array(sample, { minLength: 1, maxLength: 40 }), { minLength: 1, maxLength: 6 }),
         (batches) => {
-          const split = new CellAccumulator(32);
+          const split = new CellAccumulator();
           for (const batch of batches) split.add(batch);
           const all = batches.flat();
-          const whole = new CellAccumulator(32);
+          const whole = new CellAccumulator();
           whole.add(all);
           const expected = direct(all);
           const scale = Math.max(1, Math.abs(expected.mean), expected.sd);

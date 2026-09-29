@@ -1,5 +1,5 @@
 import type { BatchSummary } from "./backend";
-import { StreamingHistogram } from "./histogram";
+import { type HistogramWindow, TailHistogram } from "./tailHistogram";
 
 /**
  * Running statistics of one cell's samples, built up batch by batch (SPECS.md §6.3). Old samples
@@ -18,11 +18,8 @@ export class CellAccumulator {
   private firstValue = Number.NaN;
   private nan = false;
   private infinite = false;
-  readonly histogram: StreamingHistogram;
-
-  constructor(histogramBins = 64) {
-    this.histogram = new StreamingHistogram(histogramBins);
-  }
+  /** The samples' histogram, recorded log-linearly so outliers can't swamp it (SPECS.md §6.5). */
+  readonly histogram = new TailHistogram();
 
   /** Number of samples folded in, including non-finite ones. */
   get count(): number {
@@ -113,8 +110,14 @@ export class CellAccumulator {
   }
 
   /** Histogram bin heights scaled so the tallest is 1. */
-  normalizedHistogram(): number[] {
-    return this.histogram.normalized();
+  /**
+   * The histogram to show (SPECS.md §6.5): `bins` bars over a window holding the body of the
+   * distribution, scaled so the tallest is 1, and the fractions of samples beyond each side.
+   */
+  displayHistogram(bins = 64): HistogramWindow {
+    const window = this.histogram.display(bins);
+    const max = Math.max(0, ...window.counts);
+    return { ...window, counts: window.counts.map((c) => (max > 0 ? c / max : 0)) };
   }
 }
 

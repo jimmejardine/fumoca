@@ -692,6 +692,21 @@ test("a scenario picks a named cell by clicking it, or by its name", async ({ pa
   await expect(page.getByTestId("combination-count")).toHaveText(/1 combination/);
 });
 
+test("rare outliers don't squash a histogram: they show as a tail marker", async ({ page }) => {
+  await editCell(page, 0, 0, "=NORMAL(0, 1) + IF(RAND() < 0.001, 1000, 0)");
+  await editCell(page, 1, 0, "=NORMAL(0, 1)");
+  const histogram = async (row: number) =>
+    decodeURIComponent(
+      await cell(page, row, 0).evaluate((e) => getComputedStyle(e).backgroundImage),
+    );
+  const bars = (svg: string) => (svg.match(/M\d+,100V/g) ?? []).length;
+  await expect.poll(() => histogram(0)).toContain('data-tails="true"');
+  // The body still spreads over most of the bars.
+  expect(bars(await histogram(0))).toBeGreaterThan(40);
+  await expect.poll(async () => bars(await histogram(1))).toBeGreaterThan(40);
+  expect(await histogram(1)).not.toContain("data-tails");
+});
+
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {
   await editCell(page, 0, 0, "=FOO(1)");
   await editCell(page, 1, 0, "=A1 + 1");

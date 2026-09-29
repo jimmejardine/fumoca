@@ -12,7 +12,16 @@ import type { Workbook } from "@fumoca/storage";
 /** The calculated result of one cell, as the grid shows it (SPECS.md §6.5). */
 export type CellResult =
   | { kind: "number"; value: number; root: boolean }
-  | { kind: "uncertain"; mean: number; sd: number; histogram: number[]; root: boolean }
+  | {
+      kind: "uncertain";
+      mean: number;
+      sd: number;
+      /** Bar heights (the tallest is 1) over the histogram's display window. */
+      histogram: number[];
+      /** The fractions of samples beyond the window on each side (SPECS.md §6.5). */
+      tails: { below: number; above: number };
+      root: boolean;
+    }
   | { kind: "text"; text: string }
   | { kind: "error"; code: string; message: string; root: boolean };
 
@@ -96,9 +105,18 @@ function summarize(
     kind: "uncertain",
     mean: acc.mean,
     sd: acc.sd,
-    histogram: acc.normalizedHistogram(),
+    ...histogramOf(acc),
     root,
   };
+}
+
+/** An accumulator's histogram to show: its display window's bars, and its tails. */
+function histogramOf(acc: CellAccumulator): {
+  histogram: number[];
+  tails: { below: number; above: number };
+} {
+  const { counts, below, above } = acc.displayHistogram(HISTOGRAM_BINS);
+  return { histogram: counts, tails: { below, above } };
 }
 
 /** The engine's view of a workbook's sheets, including series columns for lookups. */
@@ -209,7 +227,6 @@ export function startRecalculation(
         outputs,
         seed,
         primary: spec(primary),
-        histogramBins: HISTOGRAM_BINS,
         throttleMs,
         signal: controller.signal,
       };

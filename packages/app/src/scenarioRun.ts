@@ -3,6 +3,7 @@ import {
   type CellAccumulator,
   cellKey,
   compileWorkbook,
+  type HistogramWindow,
   uncertainCells,
 } from "@fumoca/engine";
 import { RunAbortedError, runProgressively } from "@fumoca/sim";
@@ -32,8 +33,11 @@ export type OutputSummary =
       count: number;
       mean: number;
       sd: number;
-      /** The histogram's bin counts over [lo, hi). */
-      histogram: { lo: number; hi: number; counts: number[] };
+      /**
+       * The histogram's display window (SPECS.md §6.5): bar counts over [lo, hi), and the
+       * fractions of samples below and above it.
+       */
+      histogram: HistogramWindow;
     }
   | { kind: "error"; code: string; message: string };
 
@@ -77,13 +81,13 @@ function summarize(acc: CellAccumulator, uncertain: boolean, f32: boolean): Outp
   if (!uncertain) {
     return { kind: "number", value: f32 ? Number(acc.first.toPrecision(F32_DIGITS)) : acc.first };
   }
-  const { histogram } = acc;
+
   return {
     kind: "uncertain",
     count: acc.count,
     mean: acc.mean,
     sd: acc.sd,
-    histogram: { lo: histogram.lo, hi: histogram.hi, counts: Array.from(histogram.counts) },
+    histogram: acc.histogram.display(HISTOGRAM_BINS),
   };
 }
 
@@ -165,7 +169,6 @@ export function startScenarioRun(
         outputs,
         seed,
         primary,
-        histogramBins: HISTOGRAM_BINS,
         throttleMs,
         signal: controller.signal,
       },

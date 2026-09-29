@@ -45,7 +45,7 @@ import {
 import { formatNumber, formatUncertain } from "./recalc";
 import { cellRefText } from "./ScenarioPanel";
 import classes from "./ScenarioResults.module.css";
-import { histogramBackground } from "./SheetGrid";
+import { HISTOGRAM_COLORS, histogramBackground } from "./SheetGrid";
 import type { OutputSummary, ScenarioResults } from "./scenarioRun";
 
 /** A scenario's latest run: the definition and sheets it ran with, and its results so far. */
@@ -135,7 +135,6 @@ export function ScenarioControls({
 }
 
 /** Histogram fills, as in the grid's cells. */
-const HISTOGRAM_COLORS = { light: "rgba(34, 139, 230, 0.18)", dark: "rgba(77, 171, 247, 0.22)" };
 
 const normalized = (counts: number[]) => {
   const max = Math.max(...counts);
@@ -164,6 +163,9 @@ function deltaShade(delta: number, largest: number): string | undefined {
   const strength = Math.min(1, Math.abs(delta) / largest) * 0.35;
   return delta > 0 ? `rgba(64, 192, 87, ${strength})` : `rgba(250, 82, 82, ${strength})`;
 }
+
+/** A share as a percentage, to 2 significant digits: "0.42%". */
+const percent = (share: number) => `${Number((share * 100).toPrecision(2))}%`;
 
 /** A larger histogram with summary statistics, shown when a pivot cell is clicked. */
 function CellDetail({ summary, label }: { summary: OutputSummary | null; label: string }) {
@@ -198,6 +200,7 @@ function CellDetail({ summary, label }: { summary: OutputSummary | null; label: 
           backgroundImage: histogramBackground(
             normalized(histogram.counts),
             HISTOGRAM_COLORS[scheme],
+            histogram,
           ),
         }}
       />
@@ -209,6 +212,18 @@ function CellDetail({ summary, label }: { summary: OutputSummary | null; label: 
           {formatNumber(Number(histogram.hi.toPrecision(4)))}
         </Text>
       </Group>
+      {(histogram.below > 0 || histogram.above > 0) && (
+        <Text size="xs" c="dimmed">
+          {[
+            histogram.below > 0 &&
+              `${percent(histogram.below)} below ${formatNumber(Number(histogram.lo.toPrecision(4)))}`,
+            histogram.above > 0 &&
+              `${percent(histogram.above)} above ${formatNumber(Number(histogram.hi.toPrecision(4)))}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </Text>
+      )}
       <Table verticalSpacing={0} fz="xs">
         <Table.Tbody>
           {[
@@ -524,6 +539,7 @@ export function ScenarioResultsView({ workbook, run, results }: ScenarioResultsV
                       ? histogramBackground(
                           normalized(summary.histogram.counts),
                           HISTOGRAM_COLORS[scheme],
+                          summary.histogram,
                         )
                       : undefined;
                   return (

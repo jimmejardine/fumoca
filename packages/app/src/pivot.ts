@@ -1,3 +1,4 @@
+import type { HistogramWindow } from "@fumoca/engine";
 import type { OutputSummary } from "./scenarioRun";
 
 /**
@@ -224,12 +225,13 @@ export function poolSummaries(list: OutputSummary[], samples: number): OutputSum
     }
     // Each source bin is scaled to its share of the part's samples, then spread over the target
     // bins it overlaps.
-    const { lo: from, hi: to, counts: source } = part.histogram;
+    const { lo: from, hi: to, counts: source, below, above } = part.histogram;
     const total = source.reduce((a, b) => a + b, 0);
     const sourceWidth = (to - from) / source.length;
+    const inside = part.count * (1 - below - above);
     source.forEach((n, i) => {
       if (n === 0 || total === 0) return;
-      const weight = (n / total) * part.count;
+      const weight = (n / total) * inside;
       const a = from + i * sourceWidth;
       const b = a + sourceWidth;
       for (let bin = binOf(a); bin <= binOf(b); bin++) {
@@ -238,18 +240,26 @@ export function poolSummaries(list: OutputSummary[], samples: number): OutputSum
       }
     });
   }
+  const tail = (side: "below" | "above") =>
+    parts.reduce((sum, p) => sum + p.count * (p.histogram?.[side] ?? 0), 0) / Math.max(1, count);
   return {
     kind: "uncertain",
     count,
     mean,
     sd: count > 1 ? Math.sqrt(m2 / (count - 1)) : 0,
-    histogram: { lo, hi: lo + width * HISTOGRAM_BINS, counts },
+    histogram: {
+      lo,
+      hi: lo + width * HISTOGRAM_BINS,
+      counts,
+      below: tail("below"),
+      above: tail("above"),
+    },
   };
 }
 
 /** The value below which a fraction `p` of a histogram's samples lie (linear within a bin). */
 export function histogramQuantile(
-  histogram: { lo: number; hi: number; counts: number[] },
+  histogram: Pick<HistogramWindow, "lo" | "hi" | "counts">,
   p: number,
 ): number {
   const total = histogram.counts.reduce((a, b) => a + b, 0);

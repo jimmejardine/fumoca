@@ -51,3 +51,4 @@ export {
 } from "./periods";
 export { hash32, randomU32, standardNormal, toUnit, uniformUnit } from "./random";
 export { normalCdf, normalPdf } from "./special";
+export { type HistogramWindow, TAIL_HISTOGRAM_BINS, TailHistogram } from "./tailHistogram";

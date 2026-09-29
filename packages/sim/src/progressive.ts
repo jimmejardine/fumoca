@@ -35,7 +35,6 @@ export interface ProgressiveOptions {
   primary: EngineSpec;
   /** An engine to compare with the primary, iteration by iteration (SPECS.md §6.7). */
   secondary?: EngineSpec;
-  histogramBins?: number;
   /** Minimum time between progress reports, in milliseconds. */
   throttleMs?: number;
   signal?: AbortSignal;
@@ -88,14 +87,13 @@ export async function runProgressively(
   options: ProgressiveOptions,
   onProgress: (state: ProgressState) => void,
 ): Promise<ProgressState> {
-  const { outputs, seed, primary, secondary, histogramBins = 64, throttleMs = 200 } = options;
+  const { outputs, seed, primary, secondary, throttleMs = 200 } = options;
   const stop = new AbortController();
   const abort = () => stop.abort();
   options.signal?.addEventListener("abort", abort);
   if (options.signal?.aborted) stop.abort();
 
-  const accumulators = () =>
-    new Map(outputs.map((output) => [output, new CellAccumulator(histogramBins)]));
+  const accumulators = () => new Map(outputs.map((output) => [output, new CellAccumulator()]));
   const state: ProgressState = {
     primary: { done: 0, total: primary.total, accumulators: accumulators() },
     complete: false,

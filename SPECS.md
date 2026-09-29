@@ -558,10 +558,14 @@ Every uncertain cell shows live results.
   - Series lookups (`Prices[Close]@2026-10`) aren't highlighted; a lookup's time cell (`Prices@A5`) is.
 - **Deterministic numbers:** Excel "General" style (up to 10 significant digits, no thousands separators), right-aligned.
 - **In-cell histogram:** every uncertain cell's background shows a faint histogram of its samples. It's drawn as a stretched inline SVG and follows light/dark mode.
-  - It uses a 64-bin **streaming histogram** (`StreamingHistogram`, `packages/engine/src/histogram.ts`), ready for continuous sampling:
-    - The first batch sets the range: its [min, max], padded by 10%.
-    - A later sample outside the range doubles the range towards that side and merges neighbouring bins in pairs.
-    - Bin edges lie on a grid anchored at zero, so the doubled grids nest exactly and the merged counts are exact. Old samples are never re-read.
+  - **Recording:** samples are recorded in a **log-linear histogram** (`TailHistogram`, `packages/engine/src/tailHistogram.ts`), ready for continuous sampling:
+    - The first batch sets a centre (its median) and a scale (its interquartile range).
+    - 512 linear bins cover centre ± scale. Beyond that, bins grow by 2% each, out to 10¹⁵ scales on either side (about 4,000 bins in all).
+    - The body keeps a fine resolution however far away the outliers are, every sample is counted, and the bin edges never change, so batches fold in exactly. Old samples are never re-read.
+  - **Display window:** a cell shows 64 bars over the body of its distribution. The window runs from the 0.5% to the 99.5% quantile, padded by 25% on each side. Rare far outliers can't squash the body into a bar or two.
+    - If that window is at least ⅔ of the full occupied range, the full range is shown instead, and nothing is left out. Normal, uniform and triangular distributions are shown whole.
+  - **Tail markers:** when samples lie beyond the window, a small darker wedge at that edge marks them. Its height grows with their share, on a log scale from 0.1% to 5%. The scenario detail popover says how much lies beyond, for example "0.5% below 0.02 · 0.5% above 48".
+  - Strongly skewed distributions, such as a lognormal with σ = 1.5, still pile up on one side. That is their true shape on a linear axis.
   - Deterministic cells, labels and errors have no histogram.
 - **Uncertain cells:** `mean ± SD`, centred. The SD is shown to 2 significant digits, with the mean rounded to the same decimal place, for example `100 ± 10` or `1.000 ± 0.058`.
 - **Text labels:** left-aligned.

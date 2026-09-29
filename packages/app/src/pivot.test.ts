@@ -133,7 +133,13 @@ describe("poolSummaries", () => {
     count: 1000,
     mean,
     sd: 1,
-    histogram: { lo: mean - 4, hi: mean + 4, counts: [1, 4, 10, 20, 20, 10, 4, 1] },
+    histogram: {
+      lo: mean - 4,
+      hi: mean + 4,
+      counts: [1, 4, 10, 20, 20, 10, 4, 1],
+      below: 0,
+      above: 0,
+    },
   });
 
   it("merges counts, means and spreads exactly", () => {

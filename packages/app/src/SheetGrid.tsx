@@ -47,21 +47,47 @@ interface CellMeta {
 }
 
 /** Histogram fill colours: faint, so the text on top stays readable in both themes. */
-const HISTOGRAM_COLORS = { light: "rgba(34, 139, 230, 0.18)", dark: "rgba(77, 171, 247, 0.22)" };
+export const HISTOGRAM_COLORS = {
+  light: { bars: "rgba(34, 139, 230, 0.18)", tails: "rgba(34, 139, 230, 0.55)" },
+  dark: { bars: "rgba(77, 171, 247, 0.22)", tails: "rgba(77, 171, 247, 0.6)" },
+};
+
+/**
+ * A tail marker's height (as a fraction of the cell) for the share of samples beyond that edge:
+ * on a log scale, from a stub at 0.1% or less to the full height at 5% or more.
+ */
+export function tailHeight(share: number): number {
+  const scale = (Math.log10(Math.max(share, 1e-6)) + 3) / (Math.log10(0.05) + 3);
+  return 0.2 + 0.8 * Math.min(1, Math.max(0, scale));
+}
 
 /**
  * An uncertain cell's histogram as an inline SVG data URI, stretched to fill the cell as its
- * background (SPECS.md §6.5). Each bin is a bar whose height is its normalized count.
+ * background (SPECS.md §6.5). Each bin is a bar whose height is its normalized count. The bars
+ * cover the body of the distribution; samples beyond it (`tails`) show as a wedge at that edge.
  */
-export function histogramBackground(bins: readonly number[], color: string): string {
+export function histogramBackground(
+  bins: readonly number[],
+  colors: { bars: string; tails: string },
+  tails: { below: number; above: number } = { below: 0, above: 0 },
+): string {
   const bars = bins
     .map((height, i) =>
       height > 0 ? `M${i},100V${(100 - height * 100).toFixed(1)}H${i + 1}V100Z` : "",
     )
     .join("");
+  const n = bins.length;
+  const wedge = (share: number, left: boolean) => {
+    if (!(share > 0)) return "";
+    const top = (100 - tailHeight(share) * 100).toFixed(1);
+    return left ? `M0,100V${top}L0.8,100Z` : `M${n},100V${top}L${n - 0.8},100Z`;
+  };
+  const markers = wedge(tails.below, true) + wedge(tails.above, false);
   const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bins.length} 100" ` +
-    `preserveAspectRatio="none"><path d="${bars}" fill="${color}"/></svg>`;
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} 100" preserveAspectRatio="none">` +
+    `<path d="${bars}" fill="${colors.bars}"/>` +
+    (markers ? `<path d="${markers}" fill="${colors.tails}" data-tails="true"/>` : "") +
+    "</svg>";
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
 
@@ -431,7 +457,13 @@ export function SheetGrid({
           root: result.kind !== "text" && result.root,
           ...(result.kind === "error" ? { message: result.message } : {}),
           ...(result.kind === "uncertain"
-            ? { background: histogramBackground(result.histogram, HISTOGRAM_COLORS[colorScheme]) }
+            ? {
+                background: histogramBackground(
+                  result.histogram,
+                  HISTOGRAM_COLORS[colorScheme],
+                  result.tails,
+                ),
+              }
             : {}),
         };
         row[metaKey(prop)] = meta;
