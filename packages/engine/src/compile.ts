@@ -29,6 +29,8 @@ export class CompileError extends Error {
 export interface SheetInput {
   name: string;
   cells: CellInputs;
+  /** Named cells on this sheet: name → address. Names are workbook-wide (SPECS.md §4.1). */
+  names?: Readonly<Record<string, string>>;
   /**
    * Present on time-series sheets: column A holds the periods, and value columns B, C, … hold the
    * series named by `columns`, in order.
@@ -294,6 +296,19 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
   };
 
   /** Resolves a cell reference, which may name another sheet (`Inputs!B3`), to its key. */
+  // Named cells, workbook-wide, by lower-case name.
+  const named = new Map<string, string>();
+  sheets.forEach((sheet, sheetIndex) => {
+    for (const [name, address] of Object.entries(sheet.names ?? {})) {
+      named.set(name.toLowerCase(), cellKey(sheetIndex, normalizeAddress(address)));
+    }
+  });
+  const resolveName = (name: string): string => {
+    const key = named.get(name.toLowerCase());
+    if (key === undefined) throw new CompileError(`Unknown name ${name}`, "#NAME?");
+    return key;
+  };
+
   const resolveRef = (ref: { address: string; sheet?: string }, fromSheet: number): string => {
     if (ref.sheet === undefined) return cellKey(fromSheet, normalizeAddress(ref.address));
     const target = sheets.findIndex((s) => s.name.toLowerCase() === ref.sheet?.toLowerCase());
@@ -329,6 +344,12 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         break;
       case "refError":
         throw new CompileError("A reference moved off the grid when it was copied", "#REF!");
+      case "name": {
+        const key = resolveName(expr.name);
+        lookupTargets.set(expr, key);
+        into.add(key);
+        break;
+      }
       case "number":
         break;
     }
@@ -384,6 +405,8 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         return readCell(lookupTargets.get(expr) ?? resolveRef(expr, sheetIndex), sheetIndex);
       case "lookup":
         return readCell(lookupTargets.get(expr) ?? "", sheetIndex);
+      case "name":
+        return readCell(lookupTargets.get(expr) ?? resolveName(expr.name), sheetIndex);
       case "refError":
         throw new CompileError("A reference moved off the grid when it was copied", "#REF!");
       case "negate":

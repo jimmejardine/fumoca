@@ -1,4 +1,3 @@
-import { formulaReferences } from "@fumoca/engine";
 import {
   type InputHTMLAttributes,
   type ReactNode,
@@ -6,7 +5,7 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
-import { type ColorScheme, referenceColors, referenceKey } from "./dependencyColors";
+import { type ColorScheme, formulaSpans, referenceColors } from "./dependencyColors";
 import classes from "./FormulaInput.module.css";
 import {
   clearPointTarget,
@@ -41,9 +40,7 @@ function highlight(text: string, scheme: ColorScheme): ReactNode[] {
   const colors = referenceColors(text, scheme);
   const parts: ReactNode[] = [];
   let at = 0;
-  for (const reference of formulaReferences(text)) {
-    const { start, end } = reference;
-    const key = referenceKey(reference);
+  for (const { key, start, end } of formulaSpans(text)) {
     if (start > at) parts.push(text.slice(at, start));
     parts.push(
       <span key={start} data-reference={key} style={{ color: colors.get(key) }}>

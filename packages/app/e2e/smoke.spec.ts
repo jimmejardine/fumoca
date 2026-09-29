@@ -20,9 +20,10 @@ const formulaBar = (page: Page) => page.getByLabel("Formula bar");
 /** Edits a cell through the formula bar. */
 async function editCell(page: Page, row: number, col: number, text: string) {
   await cell(page, row, col).click();
-  // Wait until the formula bar shows the clicked cell before typing into it.
+  // Wait until the formula bar shows the clicked cell before typing into it. The name box shows a
+  // named cell's name, so check the address it holds.
   const address = `${String.fromCharCode(65 + col)}${row + 1}`;
-  await expect(page.getByLabel("Cell address")).toHaveValue(address);
+  await expect(page.getByLabel("Cell address")).toHaveAttribute("data-address", address);
   await formulaBar(page).fill(text);
   await formulaBar(page).press("Enter");
 }
@@ -586,6 +587,93 @@ test("scenarios are created from the side panel, and defined by clicking cells",
   ).toBeVisible();
 });
 
+test("cells are named in the name box, used in formulas, and jumped to", async ({ page }) => {
+  const nameBox = page.getByLabel("Cell address");
+  const nameCell = async (row: number, col: number, name: string) => {
+    await cell(page, row, col).click();
+    await expect(nameBox).toHaveAttribute(
+      "data-address",
+      `${String.fromCharCode(65 + col)}${row + 1}`,
+    );
+    await nameBox.fill(name);
+    await nameBox.press("Enter");
+    await expect(nameBox).toHaveValue(name);
+  };
+  await editCell(page, 0, 1, "100"); // B1
+  await nameCell(0, 1, "Spot");
+  await editCell(page, 0, 2, "=Spot*2"); // C1
+  await expect(cell(page, 0, 2)).toHaveText("200");
+
+  // Renaming rewrites the formulas that use the name.
+  await nameCell(0, 1, "Price");
+  await cell(page, 0, 2).click();
+  await expect(formulaBar(page)).toHaveValue("=Price*2");
+  await expect(cell(page, 0, 2)).toHaveText("200");
+
+  // Names must follow the rules; an existing name or an address jumps there.
+  await cell(page, 1, 1).click();
+  await expect(nameBox).toHaveAttribute("data-address", "B2");
+  await nameBox.fill("1x");
+  await nameBox.press("Enter");
+  await expect(page.getByText("A name starts with a letter or _")).toBeVisible();
+  await nameBox.press("Escape");
+  await nameBox.fill("price");
+  await nameBox.press("Enter");
+  await expect(nameBox).toHaveAttribute("data-address", "B1");
+  await nameBox.fill("C12");
+  await nameBox.press("Enter");
+  await expect(nameBox).toHaveAttribute("data-address", "C12");
+
+  // Clicking a named cell while writing a formula inserts its name. (Jumping to C12 scrolled
+  // the grid, so jump back to the top first.)
+  await nameBox.fill("D1");
+  await nameBox.press("Enter");
+  await expect(nameBox).toHaveAttribute("data-address", "D1");
+  await formulaBar(page).fill("=");
+  await cell(page, 0, 1).click();
+  await expect(formulaBar(page)).toHaveValue("=Price");
+  await formulaBar(page).press("Escape");
+
+  // A name on another sheet, and one more here.
+  await nameCell(1, 1, "Alpha");
+  await modelMenu(page, "New sheet");
+  await expect(tabs(page).filter({ hasText: "Sheet2" })).toHaveCount(1);
+  await editCell(page, 0, 0, "0.1");
+  await nameCell(0, 0, "Growth");
+  await tabs(page).filter({ hasText: "Sheet1" }).click();
+  await cell(page, 0, 3).click();
+
+  // The dropdown lists this sheet's names A–Z, then the others'; choosing one jumps to it.
+  await page.getByLabel("Named cells").click();
+  await expect(page.getByRole("option")).toHaveText([
+    /^AlphaB2$/,
+    /^PriceB1$/,
+    /^GrowthSheet2!A1$/,
+  ]);
+  await page.getByRole("option", { name: /Growth/ }).click();
+  await expect(nameBox).toHaveValue("Growth");
+  await expect(nameBox).toHaveAttribute("data-address", "A1");
+  await expect(cell(page, 0, 0)).toHaveText("0.1");
+});
+
+test("a scenario picks a named cell by clicking it, or by its name", async ({ page }) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await page.getByRole("tab", { name: "Scenarios" }).click();
+  await page.getByRole("button", { name: "New scenario" }).click();
+  await page.getByRole("button", { name: "Single cell" }).click();
+  const dimensionCell = page.getByLabel("Dimension cell");
+  await expect(dimensionCell).toBeFocused();
+  // B4 is named Volatility: clicking it picks the cell.
+  await cell(page, 3, 1).click();
+  await expect(dimensionCell).toHaveValue("'Option pricing'!B4");
+  await expect(page.getByText("Baseline: 0.2")).toBeVisible();
+  // A name can be typed too.
+  await page.getByRole("button", { name: "Output", exact: true }).click();
+  await page.getByLabel("Output 1", { exact: true }).fill("strike");
+  await page.getByLabel("Output 1", { exact: true }).press("Enter");
+  await expect(page.getByLabel("Output 1", { exact: true })).toHaveValue("'Option pricing'!B2");
+});
+
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {
   await editCell(page, 0, 0, "=FOO(1)");
   await editCell(page, 1, 0, "=A1 + 1");
@@ -635,9 +723,9 @@ test("row numbers stay correct while a filter hides rows", async ({ page }) => {
     .poll(() => rowHeader(page, 0).evaluate((e) => getComputedStyle(e).color))
     .not.toBe(unfilteredColor);
 
-  // Selection and editing use the real row.
+  // Selection and editing use the real row. (The name box shows B2's name, Strike.)
   await cell(page, 0, 1).click();
-  await expect(page.getByLabel("Cell address")).toHaveValue("B2");
+  await expect(page.getByLabel("Cell address")).toHaveAttribute("data-address", "B2");
   await expect(formulaBar(page)).toHaveValue("105");
   await page.keyboard.press("F2");
   await expect(page.getByLabel("Cell editor")).toHaveValue("105");
@@ -648,7 +736,7 @@ test("row numbers stay correct while a filter hides rows", async ({ page }) => {
   await formulaBar(page).fill("110");
   await formulaBar(page).press("Enter");
   await expect(cell(page, 0, 1)).toHaveText("110");
-  const next = await page.getByLabel("Cell address").inputValue();
+  const next = (await page.getByLabel("Cell address").getAttribute("data-address")) ?? "";
   const visibleRows = await page
     .locator('revogr-data[type="rgRow"][col-type="rowHeaders"] .rgCell')
     .allTextContents();

@@ -1,8 +1,15 @@
-import { type Backend, compile, compileWorkbook, evaluateCpu } from "@fumoca/engine";
-import { parseWorkbook, serializeWorkbook } from "@fumoca/storage";
+import { type Backend, compileWorkbook, evaluateCpu } from "@fumoca/engine";
+import { combinationCount, parseWorkbook, serializeWorkbook } from "@fumoca/storage";
 import { describe, expect, it } from "vitest";
-import { recalculate } from "./recalc";
+import { recalculate, sheetInputs } from "./recalc";
 import { createTestWorkbook } from "./testModel";
+
+/** Runs on the CPU evaluator directly, without workers. */
+const fakeBackend: Backend = {
+  name: "cpu",
+  run: async (program, options) => evaluateCpu(program, options),
+  dispose: () => {},
+};
 
 describe("test model", () => {
   it("has uniquely named sheets", () => {
@@ -12,13 +19,7 @@ describe("test model", () => {
 
   it("compiles with the engine, with errors only where the Lookups sheet expects them", () => {
     const workbook = createTestWorkbook();
-    const { sheets } = compileWorkbook(
-      workbook.sheets.map(({ name, cells, series }) =>
-        series
-          ? { name, cells, series: { granularity: series.granularity, columns: series.columns } }
-          : { name, cells },
-      ),
-    );
+    const { sheets } = compileWorkbook(sheetInputs(workbook));
     const errors = workbook.sheets.flatMap((sheet, i) =>
       [...(sheets[i]?.errors ?? [])].map(([address, e]) => `${sheet.name}!${address} ${e.code}`),
     );
@@ -55,19 +56,57 @@ describe("test model", () => {
     const workbook = createTestWorkbook();
     const loaded = parseWorkbook(serializeWorkbook(workbook));
     expect(loaded.sheets.map((s) => s.cells)).toEqual(workbook.sheets.map((s) => s.cells));
+    expect(loaded.scenarios?.map((s) => s.name)).toEqual(workbook.scenarios?.map((s) => s.name));
+  });
+
+  it("names the option inputs, and uses them in the forward price", async () => {
+    const workbook = createTestWorkbook();
+    const options = workbook.sheets.find((s) => s.name === "Option pricing");
+    expect(options?.names).toMatchObject({ Spot: "B1", Rate: "B3", Years: "B5" });
+    const { results } = await recalculate(
+      workbook,
+      { primary: { backend: fakeBackend, count: 100 } },
+      { seed: 1 },
+    );
+    const forward = results.get(options?.id ?? "")?.get("B21");
+    expect(forward).toMatchObject({ kind: "number" });
+    if (forward?.kind === "number") expect(forward.value).toBeCloseTo(100 * Math.exp(0.05), 10);
+  });
+
+  it("has scenarios over existing cells", () => {
+    const workbook = createTestWorkbook();
+    const scenarios = workbook.scenarios ?? [];
+    expect(scenarios.map((s) => [s.name, combinationCount(s)])).toEqual([
+      ["Option sensitivity", 9],
+      ["Market regimes", 9],
+      ["Deterministic check", 3],
+    ]);
+    const cells = new Map(workbook.sheets.map((sheet) => [sheet.id, sheet.cells]));
+    for (const scenario of scenarios) {
+      const refs = [
+        ...scenario.outputs,
+        ...scenario.dimensions.flatMap((d) =>
+          d.kind === "cell" ? (d.cell ? [d.cell] : []) : d.cells,
+        ),
+      ];
+      for (const { sheetId, address } of refs) {
+        expect(cells.get(sheetId)?.[address], `${scenario.name}: ${address}`).toBeDefined();
+      }
+    }
   });
 
   it("computes the Black–Scholes prices from the option inputs", () => {
     const sheet = createTestWorkbook().sheets.find((s) => s.name === "Option pricing");
     if (!sheet) throw new Error("No option pricing sheet");
     const price = (cells: typeof sheet.cells) => {
-      const result = evaluateCpu(compile(cells), {
+      const { program } = compileWorkbook([{ name: sheet.name, cells, names: sheet.names ?? {} }]);
+      const result = evaluateCpu(program, {
         seed: 1,
         iterationStart: 0,
         count: 1,
-        outputs: ["B14", "B15"],
+        outputs: ["0!B14", "0!B15"],
       });
-      return [result.get("B14")?.[0], result.get("B15")?.[0]];
+      return [result.get("0!B14")?.[0], result.get("0!B15")?.[0]];
     };
     // Textbook values for S=100, K=105, r=5%, σ=20%, T=1.
     const [call, put] = price(sheet.cells);

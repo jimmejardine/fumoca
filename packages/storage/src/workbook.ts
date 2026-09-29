@@ -1,4 +1,10 @@
-import { type CellInputs, GRANULARITIES, type Granularity } from "@fumoca/engine";
+import {
+  type CellInputs,
+  GRANULARITIES,
+  type Granularity,
+  nameError,
+  renameInFormula,
+} from "@fumoca/engine";
 import {
   type CellInput,
   type CellRef,
@@ -17,6 +23,8 @@ export interface Sheet {
   cells: CellInputs;
   /** Present on time-series sheets (SPECS.md §5): column A is the time column. */
   series?: SeriesSettings;
+  /** Named cells: name → address. Names are unique across the workbook (SPECS.md §4.1). */
+  names?: Record<string, string>;
 }
 
 /** What kind of quantity a series holds, which sets its lookup defaults (SPECS.md §5.5). */
@@ -74,7 +82,12 @@ interface ScenarioFile {
 interface WorkbookFileV1 {
   format: typeof FILE_FORMAT;
   version: typeof FILE_VERSION;
-  sheets: { name: string; cells: CellInputs; series?: SeriesSettings }[];
+  sheets: {
+    name: string;
+    cells: CellInputs;
+    series?: SeriesSettings;
+    names?: Record<string, string>;
+  }[];
   scenarios?: ScenarioFile[];
 }
 
@@ -214,9 +227,12 @@ export function serializeWorkbook(workbook: Workbook): string {
   const file: WorkbookFileV1 = {
     format: FILE_FORMAT,
     version: FILE_VERSION,
-    sheets: workbook.sheets.map(({ name, cells, series }) =>
-      series ? { name, cells, series } : { name, cells },
-    ),
+    sheets: workbook.sheets.map(({ name, cells, series, names: cellNames }) => ({
+      name,
+      cells,
+      ...(series ? { series } : {}),
+      ...(cellNames && Object.keys(cellNames).length > 0 ? { names: cellNames } : {}),
+    })),
   };
   if (workbook.scenarios?.length) {
     file.scenarios = workbook.scenarios.map((scenario) => ({
@@ -281,6 +297,7 @@ export function parseWorkbook(text: string): Workbook {
   }
 
   const names = new Set<string>();
+  const usedNames = new Set<string>();
   const sheets = data.sheets.map((sheet: unknown, i: number) => {
     if (!isRecord(sheet) || typeof sheet.name !== "string" || sheet.name === "") {
       throw new WorkbookFormatError(`Sheet ${i + 1} has no name`);
@@ -304,10 +321,137 @@ export function parseWorkbook(text: string): Workbook {
       }
       cells[address] = value;
     }
-    return createSheet(sheet.name, cells, parseSeries(sheet.series, sheet.name));
+    const created = createSheet(sheet.name, cells, parseSeries(sheet.series, sheet.name));
+    const cellNames = parseNames(sheet.names, sheet.name, usedNames);
+    return cellNames ? { ...created, names: cellNames } : created;
   });
   const scenarios = parseScenarios(data.scenarios, sheets);
   return scenarios.length > 0 ? { sheets, scenarios } : { sheets };
+}
+
+/** Parses a sheet's named cells, checking each name is valid and unused across the workbook. */
+function parseNames(
+  value: unknown,
+  sheetName: string,
+  used: Set<string>,
+): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new WorkbookFormatError(`Sheet "${sheetName}" has invalid names`);
+  const names: Record<string, string> = {};
+  for (const [name, address] of Object.entries(value)) {
+    const problem = nameError(name);
+    if (problem)
+      throw new WorkbookFormatError(`Sheet "${sheetName}" has an invalid name: ${problem}`);
+    if (used.has(name.toLowerCase()))
+      throw new WorkbookFormatError(`The name ${name} is used twice`);
+    if (typeof address !== "string" || !/^[A-Z]{1,3}[1-9][0-9]*$/.test(address)) {
+      throw new WorkbookFormatError(`The name ${name} refers to an invalid cell`);
+    }
+    used.add(name.toLowerCase());
+    names[name] = address;
+  }
+  return names;
+}
+
+/** The name of a cell, if it has one. */
+export function cellName(sheet: Sheet, address: string): string | undefined {
+  return Object.entries(sheet.names ?? {}).find(([, a]) => a === address)?.[0];
+}
+
+/** A sheet's named cells, sorted by name (A–Z, ignoring case). */
+export function namedCells(sheet: Sheet): { name: string; address: string }[] {
+  return Object.entries(sheet.names ?? {})
+    .map(([name, address]) => ({ name, address }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+/** Finds a named cell anywhere in the workbook (names match regardless of case). */
+export function findName(
+  workbook: Workbook,
+  name: string,
+): { sheetId: string; address: string } | null {
+  const target = name.toLowerCase();
+  for (const sheet of workbook.sheets) {
+    for (const [candidate, address] of Object.entries(sheet.names ?? {})) {
+      if (candidate.toLowerCase() === target) return { sheetId: sheet.id, address };
+    }
+  }
+  return null;
+}
+
+/**
+ * Why `name` can't name a cell in this workbook, or null if it can: it must follow the naming
+ * rules and not be taken by another cell (`except`, the cell being renamed, may have it).
+ */
+export function cellNameError(
+  workbook: Workbook,
+  name: string,
+  except?: { sheetId: string; address: string },
+): string | null {
+  const problem = nameError(name);
+  if (problem) return problem;
+  const existing = findName(workbook, name);
+  const same =
+    existing &&
+    except &&
+    existing.sheetId === except.sheetId &&
+    existing.address === except.address;
+  return existing && !same ? `${name} already names another cell` : null;
+}
+
+/**
+ * Returns a copy of the workbook with a cell named (SPECS.md §4.1). A cell has at most one name:
+ * naming a named cell renames it, and formulas on every sheet that use the old name are rewritten
+ * to the new one. Throws if the name can't be used.
+ */
+export function setCellName(
+  workbook: Workbook,
+  sheetId: string,
+  address: string,
+  name: string,
+): Workbook {
+  const problem = cellNameError(workbook, name, { sheetId, address });
+  if (problem) throw new Error(problem);
+  const sheet = workbook.sheets.find((s) => s.id === sheetId);
+  const old = sheet && cellName(sheet, address);
+  return {
+    ...workbook,
+    sheets: workbook.sheets.map((s) => {
+      let next = s;
+      if (old !== undefined && old !== name) {
+        const cells: CellInputs = {};
+        for (const [a, input] of Object.entries(s.cells)) {
+          cells[a] = typeof input === "string" ? renameInFormula(input, old, name) : input;
+        }
+        next = { ...next, cells };
+      }
+      if (s.id === sheetId) {
+        const names = Object.fromEntries(
+          Object.entries(s.names ?? {}).filter(([, a]) => a !== address),
+        );
+        names[name] = address;
+        next = { ...next, names };
+      }
+      return next;
+    }),
+  };
+}
+
+/** Returns a copy of the workbook with a cell's name removed. Formulas using it show #NAME?. */
+export function removeCellName(workbook: Workbook, sheetId: string, address: string): Workbook {
+  return {
+    ...workbook,
+    sheets: workbook.sheets.map((s) =>
+      s.id === sheetId
+        ? {
+            ...s,
+            names: Object.fromEntries(
+              Object.entries(s.names ?? {}).filter(([, a]) => a !== address),
+            ),
+          }
+        : s,
+    ),
+  };
 }
 
 const isInput = (value: unknown): value is CellInput =>

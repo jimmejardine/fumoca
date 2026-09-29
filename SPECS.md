@@ -57,6 +57,15 @@ This document holds the detailed specifications for fumoca. For a high-level ove
   - **F2**, double-click or typing opens an editor in the cell itself.
   - F2 and double-click show the cell's raw formula or value; typing starts a new entry.
   - Enter commits and Escape cancels.
+- **The name box (implemented)**, left of the formula bar, as in Excel:
+  - It shows the selected cell's name, or its address if it has none. Clicking in selects the text.
+  - **Enter:**
+    - typing an address (`C12`, `Inputs!B3`) or an existing name, then Enter, jumps there, opening its sheet if needed;
+    - typing a new name, then Enter, names the selected cell, or renames it;
+    - an invalid name shows why.
+
+    After a jump or a naming, the keyboard returns to the grid.
+  - **Dropdown:** lists the named cells, this sheet's first (A–Z, with addresses), then the other sheets' (A–Z, with `Sheet!address`). Choosing one jumps to it. When the selected cell is named, it also offers to remove the name.
   - Arrow Down commits like Enter and moves down; Arrow Up commits and moves up.
 - **Point mode:** while a formula is being edited, in the formula bar or in the cell, clicking a cell inserts its address at the caret instead of selecting it, as in Excel.
   - It applies where a reference can go: after `=`, `(`, `,` or an operator (ignoring spaces).
@@ -145,7 +154,22 @@ Every date value in fumoca is **tagged with a granularity** at all times. A date
     - An unknown sheet gives `#REF!`. Cycles across sheets give `#CIRC!`.
     - Sheets can't be renamed yet, so references never need rewriting.
   - Time-series structured reference: `Rates[Rate]@2027-01` (see §5.3)
-- Named ranges **(proposed)**: users can name a cell or range (for example `UnitPrice`) and use the name in formulas.
+- **Named cells (implemented):** a cell can be given a name, for example `Spot`, and formulas on any sheet can use it: `=Spot * EXP(Rate * Years)`.
+  - **Scope:** names are workbook-wide and unique, regardless of case (`spot` and `Spot` are the same name). A cell has at most one name.
+  - **Rules, as in Excel:**
+    - a name starts with a letter or `_`, followed by letters, digits, `_` or `.`, up to 255 characters;
+    - it can't look like a cell reference (`A1`, `Tax1`, `S0`);
+    - it can't be `TRUE` or `FALSE`.
+
+    A name followed by `(` is a function call, so function names like `SUM` can still be names.
+  - **Renaming** a named cell rewrites every formula that uses the old name.
+  - Removing a name leaves the formulas that use it showing `#NAME?` ("Unknown name …").
+  - **Other behaviour:**
+    - names are absolute: copying a formula doesn't change them;
+    - clicking a named cell while writing a formula (point mode) inserts its name;
+    - names are coloured and outlined as dependencies, like references.
+  - Names are saved with each sheet in the workbook file.
+  - **Not yet:** named ranges, names scoped to one sheet, and several names for one cell.
 
 ### 4.2 Function library (initial)
 

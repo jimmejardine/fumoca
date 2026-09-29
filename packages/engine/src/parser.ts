@@ -22,7 +22,9 @@ export type Expr =
   | { type: "call"; name: string; args: Expr[] }
   | { type: "lookup"; sheet: string; column?: string; when: LookupTime }
   /** `#REF!`: a reference that was moved off the grid by copying or filling. */
-  | { type: "refError" };
+  | { type: "refError" }
+  /** A named cell (SPECS.md §4.1), as written; names match regardless of case. */
+  | { type: "name"; name: string };
 
 /** The time in a series lookup: a period literal (`2026-10`) or a cell holding one. */
 export type LookupTime = { kind: "period"; text: string } | { kind: "ref"; address: string };
@@ -34,7 +36,7 @@ export class FormulaSyntaxError extends Error {
 type Token =
   | { kind: "number"; value: number }
   | { kind: "ref"; address: string; text: string; start: number; sheet?: string }
-  | { kind: "name"; name: string; text: string }
+  | { kind: "name"; name: string; text: string; start: number }
   | { kind: "sheet"; name: string }
   | { kind: "column"; name: string }
   | { kind: "at" }
@@ -122,7 +124,7 @@ function tokenize(text: string, lenient = false): Token[] {
     }
     const name = NAME.exec(rest);
     if (name) {
-      tokens.push({ kind: "name", name: name[0].toUpperCase(), text: name[0] });
+      tokens.push({ kind: "name", name: name[0].toUpperCase(), text: name[0], start: pos });
       pos += name[0].length;
       continue;
     }
@@ -297,6 +299,8 @@ class Parser {
         if (this.peekOp() !== "(" && (token.name === "TRUE" || token.name === "FALSE")) {
           return { type: "number", value: token.name === "TRUE" ? 1 : 0 };
         }
+        // A name without a bracket after it is a named cell; with one, a function call.
+        if (this.peekOp() !== "(") return { type: "name", name: token.text };
         this.expectOp("(");
         const args: Expr[] = [];
         if (this.peekOp() !== ")") {
@@ -430,4 +434,57 @@ export function shiftFormula(text: string, dx: number, dy: number): string {
     shifted = shifted.slice(0, start) + moved + shifted.slice(end);
   }
   return shifted;
+}
+
+/** A named cell used in formula text, with its span (offsets into the text as given). */
+export interface FormulaName {
+  name: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * The named cells a formula uses, in order (SPECS.md §4.1): names not followed by a bracket (which
+ * would make them function calls), other than TRUE and FALSE and series lookups' sheet names.
+ * Works on partly typed formulas, as `formulaReferences` does.
+ */
+export function formulaNames(text: string): FormulaName[] {
+  if (!text.startsWith("=")) return [];
+  const tokens = tokenize(text.slice(1), true);
+  const names: FormulaName[] = [];
+  tokens.forEach((token, i) => {
+    if (token.kind !== "name" || token.name === "TRUE" || token.name === "FALSE") return;
+    const next = tokens[i + 1];
+    if (next?.kind === "column" || next?.kind === "at") return;
+    if (next?.kind === "op" && next.op === "(") return;
+    const start = token.start + 1;
+    names.push({ name: token.text, start, end: start + token.text.length });
+  });
+  return names;
+}
+
+/** Rewrites a formula's uses of the name `from` (any case) as `to`, for renaming a cell. */
+export function renameInFormula(text: string, from: string, to: string): string {
+  let renamed = text;
+  const target = from.toLowerCase();
+  for (const { name, start, end } of formulaNames(text).reverse()) {
+    if (name.toLowerCase() === target) renamed = renamed.slice(0, start) + to + renamed.slice(end);
+  }
+  return renamed;
+}
+
+/**
+ * Why a name can't name a cell, or null if it can (Excel's rules): it starts with a letter or an
+ * underscore, then letters, digits, underscores or full stops; it doesn't look like a cell
+ * reference; and it isn't TRUE or FALSE.
+ */
+export function nameError(name: string): string | null {
+  if (name === "") return "A name can't be empty";
+  if (name.length > 255) return "A name can have at most 255 characters";
+  if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(name)) {
+    return "A name starts with a letter or _, then letters, digits, _ or .";
+  }
+  if (/^[A-Za-z]{1,3}[0-9]+$/.test(name)) return `${name} is a cell reference`;
+  if (/^(true|false)$/i.test(name)) return `${name} is reserved`;
+  return null;
 }

@@ -9,6 +9,7 @@ import {
   createGroupDimension,
   type Dimension,
   dimensionSize,
+  findName,
   type GroupDimension,
   type Scenario,
   type Workbook,
@@ -48,9 +49,12 @@ export function cellRefText(workbook: Workbook, ref: CellRef | null): string {
 /** Parses a typed reference such as `Inputs!B3`; returns an error message if it isn't one. */
 export function parseCellRef(workbook: Workbook, text: string): CellRef | string {
   const trimmed = text.trim();
+  // A named cell (point mode inserts a clicked cell's name, SPECS.md §4.1).
+  const named = findName(workbook, trimmed);
+  if (named) return named;
   const [reference, ...rest] = formulaReferences(`=${trimmed}`);
   if (!reference || rest.length > 0 || reference.end !== trimmed.length + 1) {
-    return "Type a cell such as Sheet1!B3, or click one";
+    return "Type a cell such as Sheet1!B3 or a name, or click one";
   }
   if (reference.sheet === undefined) return `Name its sheet, as in Sheet1!${reference.address}`;
   const name = reference.sheet.toLowerCase();
@@ -164,7 +168,7 @@ function CellPicker({
     <TextInput
       size="xs"
       aria-label={label}
-      placeholder="Click a cell, or type Sheet1!B3"
+      placeholder="Click a cell, or type Sheet1!B3 or a name"
       autoFocus={autoFocus}
       value={text}
       error={problem ?? error}

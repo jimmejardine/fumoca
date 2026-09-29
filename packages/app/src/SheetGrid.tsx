@@ -1,5 +1,5 @@
 import { formatReference, granularityOf } from "@fumoca/engine";
-import { lastUsedRow, PERIOD_COLUMN, type Sheet, suggestPeriod } from "@fumoca/storage";
+import { cellName, lastUsedRow, PERIOD_COLUMN, type Sheet, suggestPeriod } from "@fumoca/storage";
 import { useComputedColorScheme } from "@mantine/core";
 import {
   type CellTemplateProp,
@@ -214,6 +214,29 @@ const gridElements = new Map<string, HTMLRevoGridElement>();
  * this is the next *visible* row. RevoGrid focuses by on-screen (virtual) row index, so the
  * physical row is looked up among the visible rows.
  */
+/**
+ * Selects a cell, as the name box does when it jumps to one. The sheet's grid may still be
+ * appearing (a sheet just opened), so this waits a little for it. A cell in a row a filter hides
+ * can't be selected.
+ */
+export async function focusCell(sheetId: string, address: string): Promise<void> {
+  const position = cellPosition(address);
+  if (!position) return;
+  let grid = gridElements.get(sheetId);
+  for (let tries = 0; !grid && tries < 40; tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    grid = gridElements.get(sheetId);
+  }
+  if (!grid) return;
+  const visible = (await grid.getVisibleSource()) as Row[];
+  const y = visible.findIndex((row) => row[ROW_KEY] === position.y);
+  if (y < 0) return;
+  await grid.setCellsFocus({ x: position.x, y }, { x: position.x, y });
+  // Focusing scrolls the cells but not the row numbers beside them; scrolling the grid to the row
+  // moves both.
+  await grid.scrollToRow(y);
+}
+
 export async function focusCellBelow(sheetId: string, address: string): Promise<void> {
   const grid = gridElements.get(sheetId);
   const position = cellPosition(address);
@@ -308,9 +331,11 @@ export function SheetGrid({
       const address = cell?.getAttribute("data-address");
       const target = pointTarget();
       if (!address || !target) return;
-      // A cell on another sheet than the formula's is written with its sheet: Inputs!B3.
+      // A named cell is written by its name, as in Excel; another cell on another sheet than the
+      // formula's is written with its sheet: Inputs!B3.
+      const name = cellName(sheetRef.current, address);
       const reference =
-        target.sheetId === sheet.id ? address : formatReference(sheet.name, address);
+        name ?? (target.sheetId === sheet.id ? address : formatReference(sheet.name, address));
       if (!target.insert(reference)) return;
       pointing = true;
       event.stopPropagation();

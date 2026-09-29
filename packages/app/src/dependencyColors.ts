@@ -1,5 +1,5 @@
-import { type FormulaReference, formulaReferences } from "@fumoca/engine";
-import type { Workbook } from "@fumoca/storage";
+import { type FormulaReference, formulaNames, formulaReferences } from "@fumoca/engine";
+import { findName, type Workbook } from "@fumoca/storage";
 
 /**
  * Colours for a cell's dependencies (SPECS.md §6.5): a deterministic sequence that steps around
@@ -28,14 +28,36 @@ export function dependencyColor(i: number, scheme: ColorScheme): string {
 export const referenceKey = ({ sheet, address }: Pick<FormulaReference, "sheet" | "address">) =>
   sheet === undefined ? address : `${sheet.toLowerCase()}!${address}`;
 
+/** Identifies a named cell used in a formula (any case). */
+export const nameKey = (name: string) => `name:${name.toLowerCase()}`;
+
+/** A cell reference or a name in formula text, with its span and its colour key. */
+export type FormulaSpan = { key: string; start: number; end: number } & (
+  | { reference: FormulaReference }
+  | { name: string }
+);
+
+/** A formula's cell references and names, in the order they appear. */
+export function formulaSpans(text: string): FormulaSpan[] {
+  const spans: FormulaSpan[] = [
+    ...formulaReferences(text).map((reference) => ({
+      key: referenceKey(reference),
+      start: reference.start,
+      end: reference.end,
+      reference,
+    })),
+    ...formulaNames(text).map(({ name, start, end }) => ({ key: nameKey(name), start, end, name })),
+  ];
+  return spans.sort((a, b) => a.start - b.start);
+}
+
 /**
- * The colour for each cell a formula references, by `referenceKey`: in order of first
- * appearance, so a repeated reference keeps its colour. Empty for text that isn't a formula.
+ * The colour for each cell a formula references or names, by key: in order of first appearance,
+ * so a repeated reference keeps its colour. Empty for text that isn't a formula.
  */
 export function referenceColors(text: string, scheme: ColorScheme): Map<string, string> {
   const colors = new Map<string, string>();
-  for (const reference of formulaReferences(text)) {
-    const key = referenceKey(reference);
+  for (const { key } of formulaSpans(text)) {
     if (!colors.has(key)) colors.set(key, dependencyColor(colors.size, scheme));
   }
   return colors;
@@ -56,15 +78,23 @@ export function dependencyHighlights(
   const highlights = new Map<string, Map<string, string>>();
   if (typeof text !== "string") return highlights;
   const colors = referenceColors(text, scheme);
-  for (const reference of formulaReferences(text)) {
-    const name = reference.sheet?.toLowerCase();
-    const target =
-      name === undefined ? sheetId : workbook.sheets.find((s) => s.name.toLowerCase() === name)?.id;
-    const color = colors.get(referenceKey(reference));
-    if (!target || !color) continue;
-    const cells = highlights.get(target) ?? new Map<string, string>();
-    if (!cells.has(reference.address)) cells.set(reference.address, color);
-    highlights.set(target, cells);
+  for (const span of formulaSpans(text)) {
+    let cell: { sheetId: string; address: string } | null = null;
+    if ("name" in span) {
+      cell = findName(workbook, span.name);
+    } else {
+      const sheet = span.reference.sheet?.toLowerCase();
+      const target =
+        sheet === undefined
+          ? sheetId
+          : workbook.sheets.find((s) => s.name.toLowerCase() === sheet)?.id;
+      cell = target ? { sheetId: target, address: span.reference.address } : null;
+    }
+    const color = colors.get(span.key);
+    if (!cell || !color) continue;
+    const cells = highlights.get(cell.sheetId) ?? new Map<string, string>();
+    if (!cells.has(cell.address)) cells.set(cell.address, color);
+    highlights.set(cell.sheetId, cells);
   }
   return highlights;
 }

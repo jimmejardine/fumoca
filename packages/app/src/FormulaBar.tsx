@@ -1,7 +1,8 @@
-import { Box, Group, Text, TextInput, useComputedColorScheme } from "@mantine/core";
+import { Box, Group, Text, useComputedColorScheme } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import classes from "./FormulaBar.module.css";
 import { FormulaInput } from "./FormulaInput";
+import { NameBox, type NameBoxProps } from "./NameBox";
 
 export interface FormulaBarProps {
   /** The selected cell's address, or null if no cell is selected. */
@@ -19,6 +20,8 @@ export interface FormulaBarProps {
   onDone: () => void;
   /** Ctrl+;: a period to fill in (series sheets' time cells), or null if there's nothing to fill. */
   onFillPeriod?: (() => string | null) | undefined;
+  /** The name box, left of the formula bar. */
+  nameBox: NameBoxProps;
 }
 
 /**
@@ -34,6 +37,7 @@ export function FormulaBar({
   onCommit,
   onDone,
   onFillPeriod,
+  nameBox,
 }: FormulaBarProps) {
   const scheme = useComputedColorScheme("light");
   const [draft, setDraft] = useState(content);
@@ -59,16 +63,7 @@ export function FormulaBar({
 
   return (
     <Group h={38} px="xs" gap="xs" wrap="nowrap">
-      <TextInput
-        aria-label="Cell address"
-        value={address ?? ""}
-        readOnly
-        size="xs"
-        w={70}
-        styles={{
-          input: { textAlign: "center", fontFamily: "var(--mantine-font-family-monospace)" },
-        }}
-      />
+      <NameBox {...nameBox} />
       <Text size="sm" fs="italic" c="dimmed" ff="serif">
         fx
       </Text>

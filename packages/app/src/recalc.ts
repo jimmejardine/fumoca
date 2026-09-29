@@ -103,11 +103,12 @@ function summarize(
 
 /** The engine's view of a workbook's sheets, including series columns for lookups. */
 export function sheetInputs(workbook: Pick<Workbook, "sheets">): SheetInput[] {
-  return workbook.sheets.map(({ name, cells, series }) =>
-    series
-      ? { name, cells, series: { granularity: series.granularity, columns: series.columns } }
-      : { name, cells },
-  );
+  return workbook.sheets.map(({ name, cells, series, names }) => ({
+    name,
+    cells,
+    ...(series ? { series: { granularity: series.granularity, columns: series.columns } } : {}),
+    ...(names ? { names } : {}),
+  }));
 }
 
 export interface RunningRecalculation {

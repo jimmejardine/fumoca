@@ -1,22 +1,28 @@
-import { granularityOf, normalizePeriod } from "@fumoca/engine";
+import { formatReference, formulaReferences, granularityOf, normalizePeriod } from "@fumoca/engine";
 import {
   addSeriesColumn,
   addSheet,
+  cellName,
+  cellNameError,
   createScenario,
   createSeriesSheet,
   createWorkbook,
   FILE_EXTENSION,
+  findName,
   hasNoPeriods,
+  namedCells,
   nextScenarioName,
   nextSheetName,
   parseWorkbook,
   putScenario,
+  removeCellName,
   removeScenario,
   renameSeriesColumn,
   type Scenario,
   type SeriesSettings,
   serializeWorkbook,
   setCell,
+  setCellName,
   setSeriesSettings,
   sortSeriesSheet,
   suggestPeriod,
@@ -39,11 +45,12 @@ import {
 import { FormulaBar } from "./FormulaBar";
 import { openTextFile, saveTextFile, type WorkbookFile } from "./files";
 import { MenuBar } from "./MenuBar";
+import type { NamedCellEntry } from "./NameBox";
 import { currentDraft, subscribeDraft } from "./pointing";
 import type { Recalculation, WorkbookResults } from "./recalc";
 import { emptyRun, type ScenarioRunState } from "./ScenarioResults";
 import { openScenario, openSheet, SheetArea, SheetAreaContext, showWorkbook } from "./SheetArea";
-import { type CellEdit, focusCellBelow } from "./SheetGrid";
+import { type CellEdit, focusCell, focusCellBelow } from "./SheetGrid";
 import { SidePanel } from "./SidePanel";
 import { Toolbar } from "./Toolbar";
 import { createTestWorkbook } from "./testModel";
@@ -551,6 +558,33 @@ export function App() {
     ],
   );
 
+  // The name box (SPECS.md §4.1): jump to cells, and name them.
+  const handleJump = useCallback((sheetId: string, address: string) => {
+    if (apiRef.current) openSheet(apiRef.current, docRef.current.workbook, sheetId);
+    void focusCell(sheetId, address);
+  }, []);
+
+  const namedEntries = useMemo(() => {
+    const byName = (a: NamedCellEntry, b: NamedCellEntry) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    const entries = (sheetId: string | null) =>
+      doc.workbook.sheets
+        .filter((sheet) => (sheetId === null ? true : sheet.id === sheetId))
+        .flatMap((sheet) =>
+          namedCells(sheet).map(({ name, address }) => ({
+            name,
+            sheetId: sheet.id,
+            address,
+            location: sheet.id === activeSheetId ? address : formatReference(sheet.name, address),
+          })),
+        );
+    const all = entries(null);
+    return {
+      thisSheet: all.filter((e) => e.sheetId === activeSheetId).sort(byName),
+      otherSheets: all.filter((e) => e.sheetId !== activeSheetId).sort(byName),
+    };
+  }, [doc.workbook.sheets, activeSheetId]);
+
   const activeSheet = doc.workbook.sheets.find((s) => s.id === activeSheetId);
   const selectedAddress = activeSheet ? (selections.get(activeSheet.id) ?? null) : null;
   const selectedContent =
@@ -574,6 +608,58 @@ export function App() {
         <Toolbar onLoadTestModel={handleLoadTestModel} />
         <Divider />
         <FormulaBar
+          nameBox={{
+            shown:
+              (activeSheet && selectedAddress && cellName(activeSheet, selectedAddress)) ||
+              (selectedAddress ?? ""),
+            address: selectedAddress,
+            ...namedEntries,
+            canRemove: Boolean(
+              activeSheet && selectedAddress && cellName(activeSheet, selectedAddress),
+            ),
+            onPick: (entry) => handleJump(entry.sheetId, entry.address),
+            onRemove: () => {
+              if (!activeSheet || !selectedAddress) return;
+              const sheetId = activeSheet.id;
+              setDoc((d) => ({
+                ...d,
+                workbook: removeCellName(d.workbook, sheetId, selectedAddress),
+                dirty: true,
+              }));
+            },
+            onSubmit: (text) => {
+              const workbook = docRef.current.workbook;
+              // A cell address, on this sheet or another (Inputs!C4): jump to it.
+              const [reference, ...more] = formulaReferences(`=${text}`);
+              if (reference && more.length === 0 && reference.end === text.length + 1) {
+                const name = reference.sheet?.toLowerCase();
+                const sheet =
+                  name === undefined
+                    ? activeSheet
+                    : workbook.sheets.find((s) => s.name.toLowerCase() === name);
+                if (!sheet) return `There is no sheet named ${reference.sheet}`;
+                handleJump(sheet.id, reference.address);
+                return null;
+              }
+              // An existing name: jump to its cell.
+              const found = findName(workbook, text);
+              if (found) {
+                handleJump(found.sheetId, found.address);
+                return null;
+              }
+              // Otherwise, a new name for the selected cell.
+              if (!activeSheet || !selectedAddress) return "Select a cell to name it";
+              const target = { sheetId: activeSheet.id, address: selectedAddress };
+              const problem = cellNameError(workbook, text, target);
+              if (problem) return problem;
+              setDoc((d) => ({
+                ...d,
+                workbook: setCellName(d.workbook, target.sheetId, target.address, text),
+                dirty: true,
+              }));
+              return null;
+            },
+          }}
           address={selectedAddress}
           sheetId={activeSheet?.id}
           content={selectedContent}
