@@ -54,3 +54,34 @@
 .input:disabled {
   cursor: not-allowed;
 }
+
+.input::placeholder {
+  color: var(--mantine-color-placeholder);
+}
+
+/* The look of a Mantine xs input, for the formula bar and other formula fields. */
+.boxed {
+  --formula-input-padding: calc(var(--input-height-xs, 30px) / 3);
+  height: 30px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  background: var(--mantine-color-white);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+}
+
+:global([data-mantine-color-scheme="dark"]) .boxed {
+  background: var(--mantine-color-dark-6);
+}
+
+.boxed:focus-within {
+  border-color: var(--mantine-primary-color-filled);
+}
+
+.boxed[data-disabled] {
+  background: var(--mantine-color-disabled);
+}
+
+.boxed:has([aria-invalid="true"]) {
+  border-color: var(--mantine-color-error);
+}

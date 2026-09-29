@@ -4,6 +4,7 @@ import {
   type CellDimension,
   type CellRef,
   cellInDimension,
+  cellName,
   combinationCount,
   createCellDimension,
   createGroupDimension,
@@ -35,15 +36,16 @@ import {
   IconPlus,
   IconTrash,
 } from "@tabler/icons-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { formatCellInput, parseCellInput } from "./cellInput";
-import { clearPointTarget, type PointTarget, setPointTarget } from "./pointing";
+import { FormulaField } from "./FormulaField";
 import classes from "./ScenarioPanel.module.css";
 
-/** A cell reference as text, always with its sheet: `Inputs!B3`. */
+/** A cell as text: its name if it has one (`Volatility`), otherwise with its sheet (`Inputs!B3`). */
 export function cellRefText(workbook: Workbook, ref: CellRef | null): string {
   const sheet = ref && workbook.sheets.find((s) => s.id === ref.sheetId);
-  return ref && sheet ? formatReference(sheet.name, ref.address) : "";
+  if (!ref || !sheet) return "";
+  return cellName(sheet, ref.address) ?? formatReference(sheet.name, ref.address);
 }
 
 /** Parses a typed reference such as `Inputs!B3`; returns an error message if it isn't one. */
@@ -109,8 +111,8 @@ function CommitField({
 }
 
 /**
- * A field for choosing a cell: type `Sheet1!B3`, or focus the field and click a cell in any open
- * sheet (point mode, SPECS.md §6.1).
+ * A field for choosing a cell, edited like a formula (coloured, outlined): type `Sheet1!B3` or a
+ * name, or focus the field and click a cell in any open sheet (point mode, SPECS.md §6.1).
  */
 function CellPicker({
   workbook,
@@ -127,69 +129,20 @@ function CellPicker({
   error?: string | null;
   autoFocus?: boolean;
 }) {
-  const shown = cellRefText(workbook, value);
-  const [text, setText] = useState(shown);
-  const [problem, setProblem] = useState<string | null>(null);
-  useEffect(() => setText(shown), [shown]);
-  const latest = useRef({ workbook, onPick });
-  latest.current = { workbook, onPick };
-  const target = useRef<PointTarget | null>(null);
-
-  const accept = (typed: string): boolean => {
-    const parsed = parseCellRef(latest.current.workbook, typed);
-    if (typeof parsed === "string") {
-      setProblem(parsed);
-      return false;
-    }
-    setProblem(null);
-    setText(cellRefText(latest.current.workbook, parsed));
-    latest.current.onPick(parsed);
-    return true;
-  };
-  const register = () => {
-    // No sheet of its own: every clicked cell arrives with its sheet name.
-    const next: PointTarget = { sheetId: undefined, insert: accept, pointed: () => null };
-    target.current = next;
-    setPointTarget(next);
-  };
-  const unregister = () => {
-    if (target.current) clearPointTarget(target.current);
-    target.current = null;
-  };
-  // Stop pointing when the picker goes away while focused.
-  useEffect(
-    () => () => {
-      if (target.current) clearPointTarget(target.current);
-    },
-    [],
-  );
-
   return (
-    <TextInput
-      size="xs"
+    <FormulaField
+      reference
       aria-label={label}
       placeholder="Click a cell, or type Sheet1!B3 or a name"
       autoFocus={autoFocus}
-      value={text}
-      error={problem ?? error}
-      styles={{ input: { fontFamily: "var(--mantine-font-family-monospace)" } }}
-      onChange={(event) => {
-        setText(event.currentTarget.value);
-        setProblem(null);
-      }}
-      onFocus={register}
-      onBlur={() => {
-        unregister();
-        if (text.trim() === "") setText(shown);
-        else if (text !== shown) accept(text);
-      }}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-        if (event.key === "Enter" && text !== shown) accept(text);
-        if (event.key === "Escape") {
-          setText(shown);
-          setProblem(null);
-        }
+      value={cellRefText(workbook, value)}
+      error={error ?? undefined}
+      onCommit={(text) => {
+        if (text.trim() === "") return null;
+        const parsed = parseCellRef(workbook, text);
+        if (typeof parsed === "string") return parsed;
+        onPick(parsed);
+        return null;
       }}
     />
   );
@@ -267,11 +220,11 @@ function CellDimensionCard({
               value={alternative.label}
               onCommit={(label) => setAlternative(i, { ...alternative, label })}
             />
-            <CommitField
+            <FormulaField
               aria-label={`Alternative ${i + 1}`}
               placeholder="Value or =formula"
               className={classes.input}
-              ff="monospace"
+              sheetId={dimension.cell?.sheetId}
               value={formatCellInput(alternative.input)}
               onCommit={(text) =>
                 setAlternative(i, { ...alternative, input: parseCellInput(text) })
@@ -453,10 +406,10 @@ function GroupDimensionCard({
                 {dimension.variants.map((variant, v) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: variants are identified by position
                   <Table.Td key={v}>
-                    <CommitField
+                    <FormulaField
                       aria-label={`Variant ${v + 1} cell ${c + 1}`}
                       placeholder="unchanged"
-                      ff="monospace"
+                      sheetId={cell.sheetId}
                       value={
                         variant.inputs[c] === null || variant.inputs[c] === undefined
                           ? ""

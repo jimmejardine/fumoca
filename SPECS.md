@@ -863,7 +863,10 @@ That gives 2 × 3 = **6 combinations**.
   - the cell's current contents, shown as the Baseline;
   - a list of alternatives, each an optional label and a value, formula or distribution.
 - **A group dimension** has a name, and a small table of cells (rows) × named variants (columns). A blank entry leaves that cell unchanged in that variant.
-- **Picking cells:** a cell field accepts a typed reference with its sheet (`Sheet1!B3`, `'Option pricing'!B4`). While it has focus, clicking a cell in any open sheet fills it in, using point mode (§6.1). A cell used by two dimensions is flagged.
+- **Picking cells:** a cell field accepts a typed reference with its sheet (`Sheet1!B3`, `'Option pricing'!B4`) or a cell's name. While it has focus, clicking a cell in any open sheet fills it in, using point mode (§6.1). A named cell is shown by its name, here and in the results. A cell used by two dimensions is flagged.
+- **One editor everywhere:** cell fields, alternatives and group variants are edited with the same formula editor as the formula bar (`FormulaField`, built on `FormulaInput`):
+  - references and names are coloured, and their cells outlined while a field has focus;
+  - alternatives take formulas relative to the overridden cell's sheet, so clicking a cell inserts its address or name there.
 
 **Running**
 - *Run scenario* runs the Baseline, then each combination in turn, each for the set number of samples.

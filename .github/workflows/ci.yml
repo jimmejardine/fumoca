@@ -10,10 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # Installs the pnpm version pinned in package.json's packageManager field. It must come before
+      # setup-node, which runs pnpm to set up the dependency cache.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
-      - run: corepack enable
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       # The gpu and sim vitest projects run in Chromium, so install it before the unit tests.
       - run: pnpm --filter @fumoca/app exec playwright install --with-deps chromium

@@ -1,7 +1,7 @@
 import { Box, Group, Text, useComputedColorScheme } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import classes from "./FormulaBar.module.css";
-import { FormulaInput } from "./FormulaInput";
+import { boxedFormulaInput, FormulaInput } from "./FormulaInput";
 import { NameBox, type NameBoxProps } from "./NameBox";
 
 export interface FormulaBarProps {
@@ -75,7 +75,7 @@ export function FormulaBar({
           disabled={address === null}
           scheme={scheme}
           sheetId={sheetId}
-          className={classes.input}
+          className={boxedFormulaInput}
           onChange={(value) => {
             setDraft(value);
             setError(null);

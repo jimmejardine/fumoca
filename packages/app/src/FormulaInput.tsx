@@ -25,22 +25,51 @@ export interface FormulaInputProps
   /** The colour scheme for reference colours; read from the page if not given. */
   scheme?: ColorScheme | undefined;
   /**
-   * The sheet whose cells can be clicked to insert references (point mode). If not given, the
-   * sheet the input sits in (the in-cell editor, inside a grid).
+   * The sheet the formula belongs to: clicked cells on it are inserted as plain addresses, and
+   * the grids outline its references as it's typed. If not given, the sheet the input sits in (the
+   * in-cell editor, inside a grid); with neither, clicked cells always carry their sheet's name.
    */
   sheetId?: string | undefined;
+  /**
+   * The text is a single cell reference or name, without a leading "=" (the scenario's cell
+   * pickers): it's coloured and outlined like a reference in a formula.
+   */
+  reference?: boolean | undefined;
+  /**
+   * Handles a clicked cell (point mode) instead of inserting it at the caret; returns whether it
+   * took it. Reference fields use it to take the whole reference at once.
+   */
+  onPoint?: ((reference: string) => boolean) | undefined;
 }
+
+/**
+ * Some sheet to outline a reference field's text against: its references carry their sheets (or
+ * are names), so any open sheet will do.
+ */
+const firstSheet = (input: HTMLElement): string | undefined =>
+  input.ownerDocument.querySelector<HTMLElement>("[data-sheet]")?.dataset.sheet;
+
+/** The formula bar's look (a Mantine xs input), for formula fields elsewhere. */
+export const boxedFormulaInput = classes.boxed;
 
 /** The page's Mantine colour scheme, for components rendered outside Mantine's context. */
 export const pageColorScheme = (): ColorScheme =>
   document.documentElement.getAttribute("data-mantine-color-scheme") === "dark" ? "dark" : "light";
 
-/** Splits formula text into plain runs and cell references, each reference in its colour. */
-function highlight(text: string, scheme: ColorScheme): ReactNode[] {
-  const colors = referenceColors(text, scheme);
+/**
+ * Splits formula text into plain runs and cell references, each reference in its colour. A lone
+ * reference (`reference`) is read as if it were a formula.
+ */
+function highlight(text: string, scheme: ColorScheme, reference = false): ReactNode[] {
+  const formula = reference ? `=${text}` : text;
+  const shift = reference ? 1 : 0;
+  const colors = referenceColors(formula, scheme);
   const parts: ReactNode[] = [];
   let at = 0;
-  for (const { key, start, end } of formulaSpans(text)) {
+  for (const span of formulaSpans(formula)) {
+    const { key } = span;
+    const start = span.start - shift;
+    const end = span.end - shift;
     if (start > at) parts.push(text.slice(at, start));
     parts.push(
       <span key={start} data-reference={key} style={{ color: colors.get(key) }}>
@@ -67,6 +96,8 @@ export function FormulaInput({
   className,
   scheme,
   sheetId,
+  reference = false,
+  onPoint,
   onFocus,
   onBlur,
   onKeyDown,
@@ -81,8 +112,10 @@ export function FormulaInput({
   };
 
   // Point mode reads the latest value and callbacks through refs: the target lives while focused.
-  const latest = useRef({ value, onChange, sheetId });
-  latest.current = { value, onChange, sheetId };
+  const latest = useRef({ value, onChange, sheetId, onPoint });
+  latest.current = { value, onChange, sheetId, onPoint };
+  /** The text the grids outline: a lone reference is outlined as a formula of it. */
+  const draftText = (text: string) => (reference ? `=${text}` : text);
   const lastInsertion = useRef<Insertion | null>(null);
   const pendingCaret = useRef<number | null>(null);
   const target = useRef<PointTarget | null>(null);
@@ -95,6 +128,8 @@ export function FormulaInput({
         input.closest<HTMLElement>("[data-sheet]")?.dataset.sheet ??
         undefined,
       insert: (address) => {
+        const handle = latest.current.onPoint;
+        if (handle) return handle(address);
         const inserted = insertReference(
           latest.current.value,
           input.selectionStart ?? latest.current.value.length,
@@ -119,7 +154,8 @@ export function FormulaInput({
     };
     target.current = next;
     setPointTarget(next);
-    if (next.sheetId) publishDraft({ sheetId: next.sheetId, text: latest.current.value });
+    const draftSheet = next.sheetId ?? firstSheet(input);
+    if (draftSheet) publishDraft({ sheetId: draftSheet, text: draftText(latest.current.value) });
   };
   const unregister = () => {
     if (target.current) {
@@ -130,9 +166,12 @@ export function FormulaInput({
     lastInsertion.current = null;
   };
   // While focused, the text is the draft whose references the grids outline.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: draftText only depends on reference
   useEffect(() => {
-    const sheet = target.current?.sheetId;
-    if (sheet) publishDraft({ sheetId: sheet, text: value });
+    const input = inputRef.current;
+    if (!target.current || !input) return;
+    const sheet = target.current.sheetId ?? firstSheet(input);
+    if (sheet) publishDraft({ sheetId: sheet, text: draftText(value) });
   }, [value]);
   // An input focused on mount (autoFocus) may be focused before React's handler is attached.
   // biome-ignore lint/correctness/useExhaustiveDependencies: register and unregister use refs
@@ -158,7 +197,7 @@ export function FormulaInput({
       data-disabled={props.disabled || undefined}
     >
       <div ref={mirrorRef} className={classes.mirror} aria-hidden>
-        {highlight(value, scheme ?? pageColorScheme())}
+        {highlight(value, scheme ?? pageColorScheme(), reference)}
       </div>
       <input
         {...props}

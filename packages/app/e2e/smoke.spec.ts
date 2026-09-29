@@ -663,15 +663,33 @@ test("a scenario picks a named cell by clicking it, or by its name", async ({ pa
   await page.getByRole("button", { name: "Single cell" }).click();
   const dimensionCell = page.getByLabel("Dimension cell");
   await expect(dimensionCell).toBeFocused();
-  // B4 is named Volatility: clicking it picks the cell.
+  // B4 is named Volatility: clicking it picks the cell, shown by its name.
   await cell(page, 3, 1).click();
-  await expect(dimensionCell).toHaveValue("'Option pricing'!B4");
+  await expect(dimensionCell).toHaveValue("Volatility");
   await expect(page.getByText("Baseline: 0.2")).toBeVisible();
-  // A name can be typed too.
+  // A name can be typed too; an unnamed cell shows with its sheet.
   await page.getByRole("button", { name: "Output", exact: true }).click();
   await page.getByLabel("Output 1", { exact: true }).fill("strike");
   await page.getByLabel("Output 1", { exact: true }).press("Enter");
-  await expect(page.getByLabel("Output 1", { exact: true })).toHaveValue("'Option pricing'!B2");
+  await expect(page.getByLabel("Output 1", { exact: true })).toHaveValue("Strike");
+  await page.getByRole("button", { name: "Output", exact: true }).click();
+  await cell(page, 7, 1).click();
+  await expect(page.getByLabel("Output 2", { exact: true })).toHaveValue("'Option pricing'!B8");
+
+  // An alternative is a formula, edited like the formula bar: clicking cells inserts them (by
+  // name when named), and they're coloured.
+  await page.getByRole("button", { name: "Alternative", exact: true }).click();
+  const alternative = page.getByLabel("Alternative 1", { exact: true });
+  await alternative.click();
+  await page.keyboard.type("=");
+  await cell(page, 3, 1).click();
+  await page.keyboard.type("*2");
+  await expect(alternative).toHaveValue("=Volatility*2");
+  await expect(alternative.locator("..").locator('[data-reference="name:volatility"]')).toHaveCount(
+    1,
+  );
+  await alternative.press("Enter");
+  await expect(page.getByTestId("combination-count")).toHaveText(/1 combination/);
 });
 
 test("errors show as codes with the reason in a tooltip", async ({ page }) => {
