@@ -32,11 +32,11 @@ function unary(fn: UnaryFn, a: string): string {
     case "neg":
       return `-${a}`;
     case "sqrt":
-      return `sqrt(${a})`;
+      return `fm_sqrt(${a})`;
     case "exp":
       return `exp(${a})`;
     case "ln":
-      return `log(${a})`;
+      return `fm_ln(${a})`;
     case "abs":
       return `abs(${a})`;
     case "normcdf":
