@@ -70,10 +70,19 @@ describe("distributions", () => {
   });
 
   it("stays within the bounds of bounded distributions", () => {
-    for (const x of sampleCell("=TRIANGULAR(1, 2, 6)")) {
-      expect(x).toBeGreaterThanOrEqual(1);
-      expect(x).toBeLessThanOrEqual(6);
+    // One assertion per bound rather than per sample: per-sample expects time out on slow runners.
+    const samples = sampleCell("=TRIANGULAR(1, 2, 6)");
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    let nans = 0;
+    for (const x of samples) {
+      if (Number.isNaN(x)) nans++;
+      if (x < lo) lo = x;
+      if (x > hi) hi = x;
     }
+    expect(nans).toBe(0);
+    expect(lo).toBeGreaterThanOrEqual(1);
+    expect(hi).toBeLessThanOrEqual(6);
   });
 
   it("gives every formula that refers to a cell the same sample", () => {
