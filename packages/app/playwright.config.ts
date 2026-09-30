@@ -32,8 +32,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm build && pnpm preview --port 4173 --strictPort",
+    // Vite runs directly, not through pnpm: on Linux CI the stop signal didn't reach a server behind
+    // pnpm, so Playwright waited for it forever after the tests had passed.
+    command: "vite build && vite preview --port 4173 --strictPort",
     url: "http://localhost:4173",
     reuseExistingServer: !process.env.CI,
+    gracefulShutdown: { signal: "SIGTERM", timeout: 5000 },
   },
 });
