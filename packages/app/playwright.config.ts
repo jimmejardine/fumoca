@@ -4,7 +4,12 @@ export default defineConfig({
   testDir: "e2e",
   // Each page runs a CPU worker pool on all cores but one, so keep parallel pages few.
   workers: 4,
-  use: { baseURL: "http://localhost:4173" },
+  // Playwright defaults to the terse "dot" reporter on CI. List each test with its time instead,
+  // annotate failures on the run, and write an HTML report that CI uploads.
+  reporter: process.env.CI ? [["list"], ["github"], ["html", { open: "never" }]] : "list",
+  // Stop before CI's job timeout (30 minutes), so a hang still ends with a report saying where.
+  globalTimeout: process.env.CI ? 20 * 60_000 : undefined,
+  use: { baseURL: "http://localhost:4173", trace: "retain-on-failure" },
   projects: [
     // Playwright's headless shell has no WebGPU, so these tests exercise the CPU engine.
     { name: "chromium", use: { ...devices["Desktop Chrome"] }, grepInvert: /@gpu/ },

@@ -8,6 +8,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       # Installs the pnpm version pinned in package.json's packageManager field. It must come before
@@ -22,9 +23,16 @@ jobs:
       - run: pnpm --filter @fumoca/app exec playwright install --with-deps chromium
       - run: pnpm typecheck
       - run: pnpm lint
-      - run: pnpm test
+      # pnpm has its own --reporter option, so call vitest directly to list every test.
+      - run: pnpm exec vitest run --reporter=verbose
       - run: pnpm build
       - run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: packages/app/playwright-report
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: app-dist
