@@ -1,4 +1,5 @@
 import {
+  createCellDimension,
   createScenario,
   createSensitivity,
   createSheet,
@@ -301,12 +302,7 @@ const cellDimension = (
   sheet: Sheet,
   address: string,
   alternatives: [string, number | string][],
-): Dimension => ({
-  id: crypto.randomUUID(),
-  kind: "cell",
-  cell: { sheetId: sheet.id, address },
-  alternatives: alternatives.map(([label, input]) => ({ label, input })),
-});
+): Dimension => createCellDimension({ sheetId: sheet.id, address }, alternatives);
 
 /**
  * Scenarios to check the results view by eye:

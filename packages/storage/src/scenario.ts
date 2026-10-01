@@ -103,11 +103,15 @@ export function createSensitivity(name: string): SensitivityAnalysis {
   };
 }
 
-export const createCellDimension = (): CellDimension => ({
+/** A single-cell dimension: empty, or over `alternatives` given as [label, input] pairs. */
+export const createCellDimension = (
+  cell: CellRef | null = null,
+  alternatives: [string, CellInput][] = [],
+): CellDimension => ({
   id: crypto.randomUUID(),
   kind: "cell",
-  cell: null,
-  alternatives: [],
+  cell,
+  alternatives: alternatives.map(([label, input]) => ({ label, input })),
 });
 
 export const createGroupDimension = (name: string): GroupDimension => ({

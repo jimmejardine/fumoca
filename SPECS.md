@@ -1184,6 +1184,25 @@ packages/
 
 ---
 
+### 9.2 Reference model: Tesla 2029 (ARK Invest)
+
+fumoca's purpose is to make Monte Carlo valuation models like [ARK Invest's Tesla model](https://github.com/ARKInvest/ARK-Invest-Tesla-Valuation-Model) simple. The Tesla 2029 workbook (the **Tesla model** toolbar button, `packages/app/src/tesla/`) is a working example of one, and a reference workload for the engine.
+
+- **Where it comes from:** `scripts/ark-tesla/generate.py` reads ARK's "Tesla 2029 Valuation Extract" and writes `arkTesla.generated.ts`.
+- **What the restructure changes:**
+  - **One sheet per business line:** ARK's single-simulation sheet is split into EV, Capital, Insurance, Ride-hail, Storage, Optimus and Valuation, keeping ARK's rows, with years across.
+  - **Inputs:** each is a named cell (`AutonomousEbitdaMargin`, …) holding a clamped normal, `=IF(Up=Down, Up, MAX(Min, MIN(Max, NORMAL(mean, sd))))`. Formulas refer to inputs by name.
+  - **Correlation:** ARK's copula, between the launch year and the production constraint, becomes two visible standard-normal cells (§6.2.1).
+  - **Launch year:** the robotaxi launch is drawn as years after 2025 (`RobotaxiLaunchDelay`), and ARK's formulas on the launch year are rewritten in terms of it. The arithmetic is the same, but in single precision (the GPU) a year near 2026 can only be resolved to about 1/8,000 of a year. That is too coarse for ARK's adoption curve, which steps on the fraction of the launch year.
+  - **Text cells:** references to text cells become 0. ARK reaches them only in `IF` branches that are never taken.
+  - **Text functions:** `NUMBERVALUE(LEFT(year, 4))` becomes `INT(year)`.
+- **Checked against ARK** (`teslaModel.test.ts`):
+  - **Exactness:** fed the draws from ARK's saved run, the model reproduces every one of that run's 1,127 values to 1e-9, a 2029 share price of $2,309.46.
+  - **Monte Carlo:** 20,000 iterations match ARK's 5,000-run summary (mean $2,617, quartiles $2,020 / $3,149) within 5%.
+- **CPU and GPU:**
+  - **Agreement:** the two engines agree on the model apart from a handful of cells, where ARK subtracts large, nearly equal amounts (EBIT, and storage EBIT near zero). There, f32 loses relative accuracy in a few iterations out of 10,000, and the cross-check flags those cells (§6.7).
+  - **Engine fix:** this model also showed that `ROUND` must use an exact power of ten for written digits. The GPU's `pow` isn't exact even for whole-number powers.
+
 ## 10. Performance targets (proposed)
 
 - **CPU backend:** 10,000 iterations of a model with about 1,000 formula cells finishes in a few seconds on a typical laptop.

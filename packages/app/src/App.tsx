@@ -60,6 +60,7 @@ import {
 } from "./SidePanel";
 import { SCENARIO_KINDS } from "./scenarioKinds";
 import { Toolbar } from "./Toolbar";
+import { createTeslaWorkbook } from "./tesla/teslaModel";
 import { createTestWorkbook } from "./testModel";
 
 // Menu bar (36) + divider + toolbar (40) + divider + formula bar (38).
@@ -278,9 +279,17 @@ export function App() {
     [replaceDocument],
   );
 
-  const handleLoadTestModel = useCallback(
-    () => replaceDocument(() => untitled(createTestWorkbook(), "Test model")),
+  const loadModel = useCallback(
+    (create: () => Workbook, title: string) => replaceDocument(() => untitled(create(), title)),
     [replaceDocument],
+  );
+  const handleLoadTestModel = useCallback(
+    () => loadModel(createTestWorkbook, "Test model"),
+    [loadModel],
+  );
+  const handleLoadTeslaModel = useCallback(
+    () => loadModel(createTeslaWorkbook, "Tesla 2029"),
+    [loadModel],
   );
 
   const handleLoad = useCallback(
@@ -622,7 +631,7 @@ export function App() {
           onNewScenario={handleNewScenario}
         />
         <Divider />
-        <Toolbar onLoadTestModel={handleLoadTestModel} />
+        <Toolbar onLoadTestModel={handleLoadTestModel} onLoadTeslaModel={handleLoadTeslaModel} />
         <Divider />
         <FormulaBar
           nameBox={{

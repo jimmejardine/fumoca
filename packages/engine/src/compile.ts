@@ -762,7 +762,18 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         else arity(2);
         // On the magnitude, then signed again: halves round away from zero, as in Excel.
         const x = arg(0);
-        const scale = args.length > 1 ? bin("pow", constant(10), arg(1)) : constant(1);
+        // Written digits give an exact power of ten: a calculated power isn't exact on the GPU,
+        // so ROUND(1, 2) could come out a hair above 1 there.
+        const digits = args[1];
+        const written =
+          digits?.type === "number" ||
+          (digits?.type === "negate" && digits.operand.type === "number");
+        const scale =
+          digits === undefined
+            ? constant(1)
+            : written
+              ? constant(10 ** constantArg(1, 0))
+              : bin("pow", constant(10), arg(1));
         const magnitude = bin("mul", un("abs", x), scale);
         const rounded =
           name === "ROUND"

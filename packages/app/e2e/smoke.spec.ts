@@ -778,6 +778,41 @@ test("a sensitivity analysis shows each input's elasticity on each output", asyn
   await expect(charts.getByText(/Sheet1!B1 is exact/)).toBeVisible();
 });
 
+test("the Tesla model values Tesla in 2029, and its drivers can be analysed", async ({ page }) => {
+  await page.getByRole("button", { name: "Tesla model" }).click();
+  await expect(title(page)).toHaveText("Tesla 2029");
+  await expect(page.getByTestId("calc-status")).toHaveText(/runs/, { timeout: 60_000 });
+
+  // The 2029 share price: an uncertain result around ARK's expected value of about $2,600.
+  await tabs(page)
+    .filter({ hasText: /^Valuation$/ })
+    .click();
+  await page.getByLabel("Cell address").fill("SharePrice2029");
+  await page.getByLabel("Cell address").press("Enter");
+  await expect(page.getByLabel("Cell address")).toHaveAttribute("data-address", "L24");
+  const price = await shownMean(page, 23, 11);
+  expect(price).toBeGreaterThan(2000);
+  expect(price).toBeLessThan(3200);
+
+  // A better autonomous margin raises the share price.
+  await page.getByRole("tab", { name: "Sensitivities" }).click();
+  await page
+    .getByRole("navigation", { name: "Sensitivity analyses" })
+    .getByText("Tesla drivers")
+    .click();
+  await page.getByRole("button", { name: "Run analysis" }).click();
+  await expect(page.getByTestId("scenario-progress")).toHaveText("Ran the Baseline and 18 runs", {
+    timeout: 120_000,
+  });
+  const elasticity = Number(
+    await page
+      .getByTestId("sensitivity-matrix")
+      .getByRole("button", { name: "AutonomousEbitdaMargin on SharePrice2029" })
+      .textContent(),
+  );
+  expect(elasticity).toBeGreaterThan(0.3);
+});
+
 test("the test model's option drivers move the call up and the put down with spot", async ({
   page,
 }) => {

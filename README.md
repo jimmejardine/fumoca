@@ -23,6 +23,13 @@ If you can use a spreadsheet, you can use fumoca. You build a model in a familia
 - Modelling how an investment might grow under a range of market returns
 - Checking a budget against price changes forecast in a time-series worksheet
 
+## Reference model: Tesla 2029
+
+The **Tesla model** button loads a full valuation of Tesla in 2029, built from [ARK Invest's Tesla valuation model](https://github.com/ARKInvest/ARK-Invest-Tesla-Valuation-Model) ("Tesla 2029 Valuation Extract"). It shows what fumoca is for. ARK's Excel workbook needs about 45 hand-built `NORM.INV(RAND())` input formulas, three copies of the model and a 5,000-row data table to run its Monte Carlo. In fumoca it is one model whose inputs are named distributions, simulated continuously, with a scenario and a sensitivity analysis of the key drivers.
+
+- **Same logic as ARK's:** fed the draws from ARK's saved run, the model computes every one of that run's 1,127 values (a 2029 share price of $2,309.46). Its own Monte Carlo matches ARK's results: a mean near $2,600, with quartiles near $2,020 and $3,150.
+- **Credit:** the model's logic, inputs and notes are ARK Investment Management LLC's. `scripts/ark-tesla/generate.py` restructures ARK's workbook for fumoca. This is not investment advice.
+
 ## Tech stack
 
 - **TypeScript throughout.** The formula engine, simulation engine and UI are all written in TypeScript.
