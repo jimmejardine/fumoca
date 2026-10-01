@@ -47,23 +47,58 @@ export interface GroupDimension {
 
 export type Dimension = CellDimension | GroupDimension;
 
-export interface Scenario {
+/** What every kind of scenario has: a name, the output cells it reports, and its run size. */
+export interface ScenarioBase {
   id: string;
   name: string;
-  dimensions: Dimension[];
   outputs: CellRef[];
   /** Monte Carlo iterations per combination. */
   samples: number;
 }
 
+/** A what-if scenario (SPECS.md §7.1): the combinations of its dimensions' alternatives. */
+export interface WhatIfScenario extends ScenarioBase {
+  kind: "scenario";
+  dimensions: Dimension[];
+}
+
+/**
+ * A sensitivity analysis (SPECS.md §7.5): each input in turn scaled down and up by each step (for
+ * example ±1%), with every other input left as it is.
+ */
+export interface SensitivityAnalysis extends ScenarioBase {
+  kind: "sensitivity";
+  inputs: CellRef[];
+  /** The changes to test, as fractions: 0.01 tests −1% and +1%. */
+  steps: number[];
+}
+
+/** Any kind of scenario. Each kind generates its own combinations (see `combinations`). */
+export type Scenario = WhatIfScenario | SensitivityAnalysis;
+
 export const DEFAULT_SCENARIO_SAMPLES = 10_000;
 
-export function createScenario(name: string): Scenario {
+export function createScenario(name: string): WhatIfScenario {
   return {
     id: crypto.randomUUID(),
+    kind: "scenario",
     name,
     dimensions: [],
     outputs: [],
+    samples: DEFAULT_SCENARIO_SAMPLES,
+  };
+}
+
+export const DEFAULT_SENSITIVITY_STEP = 0.01;
+
+export function createSensitivity(name: string): SensitivityAnalysis {
+  return {
+    id: crypto.randomUUID(),
+    kind: "sensitivity",
+    name,
+    inputs: [],
+    outputs: [],
+    steps: [DEFAULT_SENSITIVITY_STEP],
     samples: DEFAULT_SCENARIO_SAMPLES,
   };
 }
@@ -89,6 +124,12 @@ export const dimensionSize = (dimension: Dimension) =>
 
 /** The number of combinations a scenario runs (not counting the Baseline). */
 export function combinationCount(scenario: Scenario): number {
+  return scenario.kind === "scenario"
+    ? whatIfCount(scenario)
+    : 2 * scenario.inputs.length * scenario.steps.length;
+}
+
+function whatIfCount(scenario: WhatIfScenario): number {
   const sized = scenario.dimensions.filter((d) => dimensionSize(d) > 0);
   return sized.length === 0 ? 0 : sized.reduce((n, d) => n * dimensionSize(d), 1);
 }
@@ -100,11 +141,17 @@ export function alternativeLabel(dimension: Dimension, index: number): string {
   return alternative ? alternative.label || String(alternative.input) : "";
 }
 
+/**
+ * A cell's input replaced while a combination runs: by another input, or by its own input scaled
+ * by a factor (`=(its formula) * scale`, which scales a distribution's every sample).
+ */
+export type Override = { cell: CellRef; input: CellInput } | { cell: CellRef; scale: number };
+
 /** One combination of a scenario: an alternative index per dimension, and its cell overrides. */
 export interface Combination {
   /** The chosen alternative of each dimension, by dimension id. */
   choices: Map<string, number>;
-  overrides: { cell: CellRef; input: CellInput }[];
+  overrides: Override[];
 }
 
 /**
@@ -113,6 +160,39 @@ export interface Combination {
  * skipped.
  */
 export function combinations(scenario: Scenario): Combination[] {
+  return scenario.kind === "scenario"
+    ? whatIfCombinations(scenario)
+    : sensitivityCombinations(scenario);
+}
+
+/** Where a sensitivity analysis's run is in `combinations`: input-major, then step, then −/+. */
+export const sensitivityIndex = (
+  analysis: Pick<SensitivityAnalysis, "steps">,
+  input: number,
+  step: number,
+  sign: -1 | 1,
+) => (input * analysis.steps.length + step) * 2 + (sign > 0 ? 1 : 0);
+
+/**
+ * A sensitivity analysis's runs: each input scaled by 1 − h and 1 + h for each step h, in the
+ * order of `sensitivityIndex`. Choices record the input, step and sign (−1 or 1).
+ */
+function sensitivityCombinations(analysis: SensitivityAnalysis): Combination[] {
+  return analysis.inputs.flatMap((cell, input) =>
+    analysis.steps.flatMap((h, step) =>
+      ([-1, 1] as const).map((sign) => ({
+        choices: new Map([
+          ["input", input],
+          ["step", step],
+          ["sign", sign],
+        ]),
+        overrides: [{ cell, scale: 1 + sign * h }],
+      })),
+    ),
+  );
+}
+
+function whatIfCombinations(scenario: WhatIfScenario): Combination[] {
   const dimensions = scenario.dimensions.filter(
     (d) => dimensionSize(d) > 0 && (d.kind === "group" || d.cell !== null),
   );
@@ -144,7 +224,7 @@ export function combinations(scenario: Scenario): Combination[] {
 const sameCell = (a: CellRef, b: CellRef) => a.sheetId === b.sheetId && a.address === b.address;
 
 /** The cells a scenario's dimensions override, each with the dimension it belongs to. */
-function dimensionCells(scenario: Scenario): { cell: CellRef; dimension: Dimension }[] {
+function dimensionCells(scenario: WhatIfScenario): { cell: CellRef; dimension: Dimension }[] {
   return scenario.dimensions.flatMap((dimension): { cell: CellRef; dimension: Dimension }[] =>
     dimension.kind === "cell"
       ? dimension.cell
@@ -155,7 +235,7 @@ function dimensionCells(scenario: Scenario): { cell: CellRef; dimension: Dimensi
 }
 
 /** Whether a cell already belongs to one of the scenario's dimensions (other than `except`). */
-export function cellInDimension(scenario: Scenario, cell: CellRef, except?: string): boolean {
+export function cellInDimension(scenario: WhatIfScenario, cell: CellRef, except?: string): boolean {
   return dimensionCells(scenario).some(
     (entry) => entry.dimension.id !== except && sameCell(entry.cell, cell),
   );

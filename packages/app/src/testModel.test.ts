@@ -80,14 +80,17 @@ describe("test model", () => {
       ["Option sensitivity", 9],
       ["Market regimes", 9],
       ["Deterministic check", 3],
+      ["Option drivers", 10],
     ]);
     const cells = new Map(workbook.sheets.map((sheet) => [sheet.id, sheet.cells]));
     for (const scenario of scenarios) {
       const refs = [
         ...scenario.outputs,
-        ...scenario.dimensions.flatMap((d) =>
-          d.kind === "cell" ? (d.cell ? [d.cell] : []) : d.cells,
-        ),
+        ...(scenario.kind === "scenario"
+          ? scenario.dimensions.flatMap((d) =>
+              d.kind === "cell" ? (d.cell ? [d.cell] : []) : d.cells,
+            )
+          : scenario.inputs),
       ];
       for (const { sheetId, address } of refs) {
         expect(cells.get(sheetId)?.[address], `${scenario.name}: ${address}`).toBeDefined();

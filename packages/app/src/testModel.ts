@@ -1,5 +1,6 @@
 import {
   createScenario,
+  createSensitivity,
   createSheet,
   type Dimension,
   type Scenario,
@@ -195,6 +196,8 @@ const cellDimension = (
  * - Market regimes: a group moving spot, rate and volatility together (the stressed spot is
  *   itself a distribution), crossed with the time to expiry.
  * - Deterministic check: exact values that can be checked by hand; B2 = B1 × 1.08 − 40.
+ * - Option drivers: a sensitivity analysis of the option prices to each Black–Scholes input. The
+ *   exact prices' elasticities have closed forms to check the Monte Carlo ones against.
  */
 function createTestScenarios(sheets: Sheet[]): Scenario[] {
   const [options, , deterministic] = sheets;
@@ -249,6 +252,11 @@ function createTestScenarios(sheets: Sheet[]): Scenario[] {
         ]),
       ],
       outputs: [on(deterministic, "B2"), on(deterministic, "B4")],
+    },
+    {
+      ...createSensitivity("Option drivers"),
+      inputs: ["B1", "B2", "B3", "B4", "B5"].map((address) => on(options, address)),
+      outputs: [on(options, "B8"), on(options, "B9"), on(options, "B14"), on(options, "B15")],
     },
   ];
 }

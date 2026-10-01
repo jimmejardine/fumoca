@@ -1,13 +1,10 @@
+import type { Scenario } from "@fumoca/storage";
 import { Button, Group, Menu, Text } from "@mantine/core";
-import {
-  IconArrowsSplit,
-  IconDeviceFloppy,
-  IconFile,
-  IconFolderOpen,
-  IconTablePlus,
-  IconTimeline,
-} from "@tabler/icons-react";
+import { IconDeviceFloppy, IconFile, IconFolderOpen, IconTablePlus } from "@tabler/icons-react";
 import { ConfigMenu, type ConfigMenuProps } from "./ConfigMenu";
+import { SCENARIO_ICONS, SERIES_SHEET_ICON } from "./icons";
+
+const { scenario: ScenarioIcon, sensitivity: SensitivityIcon } = SCENARIO_ICONS;
 
 export interface MenuBarProps {
   config: ConfigMenuProps;
@@ -18,7 +15,7 @@ export interface MenuBarProps {
   onLoad: () => void;
   onNewSheet: () => void;
   onNewSeriesSheet: () => void;
-  onNewScenario: () => void;
+  onNewScenario: (kind: Scenario["kind"]) => void;
 }
 
 export function MenuBar({
@@ -66,11 +63,20 @@ export function MenuBar({
             <Menu.Item leftSection={<IconTablePlus size={16} />} onClick={onNewSheet}>
               New sheet
             </Menu.Item>
-            <Menu.Item leftSection={<IconTimeline size={16} />} onClick={onNewSeriesSheet}>
+            <Menu.Item leftSection={<SERIES_SHEET_ICON size={16} />} onClick={onNewSeriesSheet}>
               New series sheet
             </Menu.Item>
-            <Menu.Item leftSection={<IconArrowsSplit size={16} />} onClick={onNewScenario}>
-              New scenario
+            <Menu.Item
+              leftSection={<ScenarioIcon size={16} />}
+              onClick={() => onNewScenario("scenario")}
+            >
+              New scenario analysis
+            </Menu.Item>
+            <Menu.Item
+              leftSection={<SensitivityIcon size={16} />}
+              onClick={() => onNewScenario("sensitivity")}
+            >
+              New sensitivity analysis
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>

@@ -9,9 +9,9 @@ import {
 import { RunAbortedError, runProgressively } from "@fumoca/sim";
 import {
   type CellInput,
-  type CellRef,
   type Combination,
   combinations,
+  type Override,
   type Scenario,
   type Workbook,
 } from "@fumoca/storage";
@@ -51,11 +51,21 @@ export interface ScenarioResults {
   complete: boolean;
 }
 
-/** Returns a copy of the workbook with some cells' inputs replaced. An empty input clears one. */
-export function applyOverrides(
-  workbook: Workbook,
-  overrides: readonly { cell: CellRef; input: CellInput }[],
-): Workbook {
+/**
+ * A cell's input scaled by a factor: a number times it, and a formula wrapped as
+ * `=(formula)*factor`, which scales a distribution's every sample. Text and empty cells stay.
+ */
+export function scaleInput(input: CellInput | undefined, scale: number): CellInput | undefined {
+  if (typeof input === "number") return input * scale;
+  if (typeof input === "string" && input.startsWith("=")) return `=(${input.slice(1)})*${scale}`;
+  return input;
+}
+
+/**
+ * Returns a copy of the workbook with some cells' inputs replaced or scaled. An empty input
+ * clears one.
+ */
+export function applyOverrides(workbook: Workbook, overrides: readonly Override[]): Workbook {
   if (overrides.length === 0) return workbook;
   return {
     ...workbook,
@@ -63,9 +73,12 @@ export function applyOverrides(
       const mine = overrides.filter((o) => o.cell.sheetId === sheet.id);
       if (mine.length === 0) return sheet;
       const cells = { ...sheet.cells };
-      for (const { cell, input } of mine) {
-        if (input === "") delete cells[cell.address];
-        else cells[cell.address] = input;
+      for (const override of mine) {
+        const { address } = override.cell;
+        const input =
+          "scale" in override ? scaleInput(cells[address], override.scale) : override.input;
+        if (input === "" || input === undefined) delete cells[address];
+        else cells[address] = input;
       }
       return { ...sheet, cells };
     }),

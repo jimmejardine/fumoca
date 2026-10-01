@@ -1,10 +1,10 @@
 import {
   alternativeLabel,
-  combinationCount,
   createScenario,
   dimensionSize,
   type Scenario,
   type Sheet,
+  type WhatIfScenario,
   type Workbook,
 } from "@fumoca/storage";
 import {
@@ -29,11 +29,11 @@ import {
   IconSortDescending,
 } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
+import { cellRefText } from "./CellPicker";
 import {
   buildPivot,
   defaultLayout,
   type FilterValue,
-  histogramQuantile,
   moveField,
   OUTPUTS_FIELD,
   type PivotField,
@@ -42,15 +42,14 @@ import {
   reconcileLayout,
   summaryMean,
 } from "./pivot";
-import { formatNumber, formatUncertain } from "./recalc";
-import { cellRefText } from "./ScenarioPanel";
 import classes from "./ScenarioResults.module.css";
 import { HISTOGRAM_COLORS, histogramBackground } from "./SheetGrid";
-import type { OutputSummary, ScenarioResults } from "./scenarioRun";
+import type { ScenarioResults } from "./scenarioRun";
+import { CellDetail, deltaShade, deltaText, normalized, summaryText } from "./summaryView";
 
 /** A scenario's latest run: the definition and sheets it ran with, and its results so far. */
-export interface ScenarioRunState {
-  definition: Scenario;
+export interface ScenarioRunState<S extends Scenario = Scenario> {
+  definition: S;
   sheets: Sheet[];
   results: ScenarioResults | null;
   running: boolean;
@@ -72,6 +71,15 @@ export interface ScenarioControlsProps {
   scenario: Scenario;
   workbook: Workbook;
   run: ScenarioRunState | undefined;
+  /** The run button's label: "Run scenario". */
+  runLabel: string;
+  /** Whether the definition is complete enough to run, and what's missing if it isn't. */
+  ready: boolean;
+  hint: string;
+  /** What each run after the Baseline is called: "combination". */
+  unit: string;
+  /** What the definition is called: "scenario". */
+  noun: string;
   onRun: () => void;
   onStop: () => void;
 }
@@ -81,10 +89,14 @@ export function ScenarioControls({
   scenario,
   workbook,
   run,
+  runLabel,
+  ready,
+  hint,
+  unit,
+  noun,
   onRun,
   onStop,
 }: ScenarioControlsProps) {
-  const ready = combinationCount(scenario) > 0 && scenario.outputs.length > 0;
   const progress = run?.results?.progress;
   return (
     <Stack gap={4} mt="xs">
@@ -105,24 +117,24 @@ export function ScenarioControls({
           disabled={!ready}
           onClick={onRun}
         >
-          Run scenario
+          {runLabel}
         </Button>
       )}
       {!ready && (
         <Text size="xs" c="dimmed">
-          Add a dimension with alternatives, and an output, to run it.
+          {hint}
         </Text>
       )}
       {progress && (
         <Text size="xs" c="dimmed" data-testid="scenario-progress">
           {progress.done === progress.total
-            ? `Ran the Baseline and ${progress.total - 1} combination${progress.total === 2 ? "" : "s"}`
+            ? `Ran the Baseline and ${progress.total - 1} ${unit}${progress.total === 2 ? "" : "s"}`
             : `Running ${progress.done + 1} of ${progress.total}…`}
         </Text>
       )}
       {run && !run.running && isStale(run, scenario, workbook) && (
         <Text size="xs" c="orange">
-          The model or the scenario has changed since this run.
+          The model or the {noun} has changed since this run.
         </Text>
       )}
       {run?.error && (
@@ -130,117 +142,6 @@ export function ScenarioControls({
           {run.error}
         </Text>
       )}
-    </Stack>
-  );
-}
-
-/** Histogram fills, as in the grid's cells. */
-
-const normalized = (counts: number[]) => {
-  const max = Math.max(...counts);
-  return counts.map((c) => (max > 0 ? c / max : 0));
-};
-
-function summaryText(summary: OutputSummary | null): string {
-  if (!summary) return "…";
-  if (summary.kind === "number") return formatNumber(summary.value);
-  if (summary.kind === "uncertain") return formatUncertain(summary.mean, summary.sd);
-  return summary.code;
-}
-
-/** A change from the Baseline: "+12.5 (+4.1%)". */
-function deltaText(value: number, baseline: number): string {
-  const delta = value - baseline;
-  const sign = delta > 0 ? "+" : "";
-  const percent =
-    baseline !== 0 ? ` (${sign}${((delta / Math.abs(baseline)) * 100).toFixed(1)}%)` : "";
-  return `${sign}${formatNumber(Number(delta.toPrecision(4)))}${percent}`;
-}
-
-/** A diverging shade for a change: green up, red down, stronger for larger changes. */
-function deltaShade(delta: number, largest: number): string | undefined {
-  if (!(largest > 0) || delta === 0) return undefined;
-  const strength = Math.min(1, Math.abs(delta) / largest) * 0.35;
-  return delta > 0 ? `rgba(64, 192, 87, ${strength})` : `rgba(250, 82, 82, ${strength})`;
-}
-
-/** A share as a percentage, to 2 significant digits: "0.42%". */
-const percent = (share: number) => `${Number((share * 100).toPrecision(2))}%`;
-
-/** A larger histogram with summary statistics, shown when a pivot cell is clicked. */
-function CellDetail({ summary, label }: { summary: OutputSummary | null; label: string }) {
-  const scheme = useComputedColorScheme("light");
-  if (!summary) return <Text size="sm">Still to run.</Text>;
-  if (summary.kind === "error") {
-    return (
-      <Text size="sm">
-        {summary.code}: {summary.message}
-      </Text>
-    );
-  }
-  if (summary.kind === "number") {
-    return (
-      <Text size="sm">
-        {label}: {formatNumber(summary.value)} (the same in every iteration)
-      </Text>
-    );
-  }
-  const { histogram } = summary;
-  const quantile = (p: number) =>
-    formatNumber(Number(histogramQuantile(histogram, p).toPrecision(4)));
-  return (
-    <Stack gap={4} w={300}>
-      <Text size="sm" fw={600}>
-        {label}
-      </Text>
-      <Box
-        h={110}
-        className={classes.detailHistogram}
-        style={{
-          backgroundImage: histogramBackground(
-            normalized(histogram.counts),
-            HISTOGRAM_COLORS[scheme],
-            histogram,
-          ),
-        }}
-      />
-      <Group justify="space-between">
-        <Text size="xs" c="dimmed">
-          {formatNumber(Number(histogram.lo.toPrecision(4)))}
-        </Text>
-        <Text size="xs" c="dimmed">
-          {formatNumber(Number(histogram.hi.toPrecision(4)))}
-        </Text>
-      </Group>
-      {(histogram.below > 0 || histogram.above > 0) && (
-        <Text size="xs" c="dimmed">
-          {[
-            histogram.below > 0 &&
-              `${percent(histogram.below)} below ${formatNumber(Number(histogram.lo.toPrecision(4)))}`,
-            histogram.above > 0 &&
-              `${percent(histogram.above)} above ${formatNumber(Number(histogram.hi.toPrecision(4)))}`,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </Text>
-      )}
-      <Table verticalSpacing={0} fz="xs">
-        <Table.Tbody>
-          {[
-            ["Mean", formatNumber(Number(summary.mean.toPrecision(6)))],
-            ["SD", formatNumber(Number(summary.sd.toPrecision(4)))],
-            ["P10", quantile(0.1)],
-            ["P50", quantile(0.5)],
-            ["P90", quantile(0.9)],
-            ["Samples", summary.count.toLocaleString()],
-          ].map(([name, value]) => (
-            <Table.Tr key={name}>
-              <Table.Td>{name}</Table.Td>
-              <Table.Td ta="right">{value}</Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
     </Stack>
   );
 }
@@ -320,7 +221,7 @@ function FieldChip({
 
 export interface ScenarioResultsViewProps {
   workbook: Workbook;
-  run: ScenarioRunState;
+  run: ScenarioRunState<WhatIfScenario>;
   results: ScenarioResults;
 }
 

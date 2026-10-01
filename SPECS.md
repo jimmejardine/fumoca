@@ -848,8 +848,14 @@ That gives 2 × 3 = **6 combinations**.
 ### 7.4.1 Current implementation
 
 **Where scenarios live**
-- The left-hand side panel has tabs down its left edge: **Sheets** (with *New sheet* and *New series sheet* buttons above the list) and **Scenarios** (with a *New scenario* button above the list, and a menu per scenario to delete it). More tabs can join later. *Model → New scenario* does the same.
+- The left-hand side panel has tabs down its left edge:
+  - **Sheets**, with *New sheet* and *New series sheet* buttons above the list;
+  - **Scenarios**, with a *New scenario* button above the list, and a menu per scenario to delete it;
+  - **Sensitivities**, for sensitivity analyses (§7.5.1).
+
+  More tabs can join later. *Model → New scenario analysis* does the same as *New scenario*. The panel starts collapsed to its tabs: clicking a tab opens it, and the handle on its edge or a second click on the open tab collapses it again.
 - **A scenario is a dockable window, like a sheet.** It opens beside the sheets, so their cells can be clicked while it's defined.
+- **Window tabs show what they hold** with the same icon as the side panel: a sheet, a series sheet, a scenario or a sensitivity analysis.
 - Scenarios are saved in the workbook file. Cells are referred to by sheet name, since sheet ids are regenerated on load. Older files load with no scenarios.
 
 **The scenario window**
@@ -926,14 +932,22 @@ Under the hood it is an ordinary scenario (§7.1–7.4), so it reuses the same e
 
 #### Results
 
-- **Sensitivity table:**
-  - One row per (input, output) pair.
-  - Shows how much the output changes, in absolute terms and as a percentage, for each step.
-  - Includes the **elasticity**: the percentage change in the output divided by the percentage change in the input. For example, "a 1% rise in price gives a 2.4% rise in profit".
-  - Changes can be measured on the mean (default) or on another statistic, such as P10, P90, or the chance that profit is below 0.
-- **Tornado chart:** for each output, inputs are ranked by how much they move it, with the low and high step shown as bars either side of the base value.
-- **Spider chart:** output against the percentage change in each input, one line per input. It shows non-linear effects.
+- **Sensitivity matrix:**
+  - Outputs run across the top as columns, and inputs run down the side as rows. Each cell holds one input's effect on one output.
+  - By default the cell shows the **elasticity**: the percentage change in the output divided by the percentage change in the input. For example, "a 1% rise in price gives a 2.4% rise in profit". It is unitless, so outputs can be compared.
+  - It can instead show how much the output changes for the step, as a percentage or in absolute terms.
+  - Changes can be measured on the mean (default) or on another statistic, such as P10 or P90, or the chance that profit is below 0 **(proposed)**.
+  - Cells are shaded by the size and sign of the effect.
+  - **Sorting:**
+    - Clicking an output's column header sorts the inputs by their effect on that output, largest first, whatever its sign. Clicking again reverses the order.
+    - Clicking an input's row header sorts the outputs the same way.
+    - Only one sort applies at a time, so a new sort replaces the last.
+- **Charts for the clicked cell** (input *x*, output *y*):
+  - **Tornado chart:** for output *y*, inputs are ranked by how much they move it, with the low and high step shown as bars either side of the base value. Input *x* is highlighted.
+  - **Distribution shift:** *y*'s distribution with *x* down, at the Baseline, and with *x* up, overlaid. It shows whether an input moves the whole distribution or only one tail.
+  - **Spider chart:** *y*'s percentage change against the percentage change in each input, one line per input, over every step. It shows non-linear effects.
 - **Plain-language summary (proposed):** for example, "Profit is most sensitive to Price (±10% → ±24%), then UnitCost (±10% → ∓15%)."
+- **Error bars (proposed):** because the runs share random numbers, each effect could carry a standard error from the paired per-iteration differences, and effects within the noise could be greyed out.
 
 #### Relationship to the live sensitivity in §6.5
 
@@ -941,6 +955,50 @@ The two are complementary:
 
 - **§6.5 (the tornado in the detail panel):** comes for free from the samples the engine is already generating. It uses rank correlation or regression between the sampled inputs and each output, and answers "which *uncertainties* drive this output?"
 - **§7.5 (this section):** tests specific changes chosen by the user, and answers "what happens if price moves by *x*%?"
+
+#### 7.5.1 Current implementation
+
+**A kind of scenario**
+- A sensitivity analysis is a scenario with `kind: "sensitivity"`. Its definition is a list of inputs, a list of steps, the outputs and the samples per run. Older files, with no `kind`, load as what-if scenarios.
+- It shares everything a scenario has apart from its definition and results:
+  - the dockable window, with its name, *Outputs*, sample count and hideable definition;
+  - *Run* / *Stop* and progress, and the "out of date" marking;
+  - running on one engine, with common random numbers;
+  - saving in the workbook file;
+  - the list in the side panel.
+- Each kind supplies only its definition editor, its results view and its wording (`scenarioKinds.tsx`).
+- The side panel's **Sensitivities** tab lists the analyses, with a *New analysis* button. *Model → New sensitivity analysis* does the same.
+
+**Definition**
+- **Inputs** and **Outputs** are picked like a scenario's cells.
+- **Steps** are percentages, ±1% by default. More can be added, each roughly double the last.
+- The count reads, for example, "5 inputs × 1 step × (− and +) = 10 runs, plus the Baseline".
+
+**Running**
+- Each input is scaled down and up by each step in turn: 2 × inputs × steps runs, plus the Baseline.
+- **Scaling:**
+  - a number is multiplied by 1 ± h;
+  - a formula or distribution is wrapped as `=(formula)*(1±h)`, so a distribution is scaled as a whole;
+  - text and empty cells are left alone.
+
+**Results**
+- The matrix's effects use the **central difference**, (up − down) / 2, which cancels the curvature that a one-sided difference picks up.
+- **Measures:**
+  - *Elasticity* is (up − down) / (2h × base).
+  - *%Δy* and *Δy* are the change for one step.
+  - A percentage of a zero Baseline shows as "—".
+- **Statistics:** mean, P10, P90 or SD. The percentiles come from the histograms.
+- **With several steps,** a selector picks the step the matrix and tornado show.
+- An orange **~** marks an effect whose rise and fall differ by more than 10%: the response isn't linear there.
+- **The charts** appear when a cell is clicked, and are drawn with ECharts, loaded on demand.
+  - The distribution shift describes an exact output in words instead of drawing it.
+  - The spider chart needs two or more steps.
+- **Not yet built:**
+  - Δy/Δx in the input's own units: it needs each input's Baseline value, which runs don't report yet;
+  - pairs of inputs changed together;
+  - absolute steps;
+  - the plain-language summary;
+  - error bars.
 
 ---
 

@@ -9,6 +9,7 @@ import {
   type CellInput,
   type CellRef,
   DEFAULT_SCENARIO_SAMPLES,
+  DEFAULT_SENSITIVITY_STEP,
   type Dimension,
   type Scenario,
 } from "./scenario";
@@ -72,12 +73,16 @@ type DimensionFile =
       variants: { label: string; inputs: (CellInput | null)[] }[];
     };
 
-interface ScenarioFile {
+/** What every kind of scenario saves. What-if scenarios have no `kind`, as before there were others. */
+interface ScenarioFileBase {
   name: string;
-  dimensions: DimensionFile[];
   outputs: CellRefFile[];
   samples: number;
 }
+
+type ScenarioFile =
+  | (ScenarioFileBase & { kind?: "scenario"; dimensions: DimensionFile[] })
+  | (ScenarioFileBase & { kind: "sensitivity"; inputs: CellRefFile[]; steps: number[] });
 
 interface WorkbookFileV1 {
   format: typeof FILE_FORMAT;
@@ -235,12 +240,24 @@ export function serializeWorkbook(workbook: Workbook): string {
     })),
   };
   if (workbook.scenarios?.length) {
-    file.scenarios = workbook.scenarios.map((scenario) => ({
-      name: scenario.name,
-      dimensions: scenario.dimensions.map(dimension),
-      outputs: scenario.outputs.map(ref),
-      samples: scenario.samples,
-    }));
+    file.scenarios = workbook.scenarios.map((scenario): ScenarioFile => {
+      const outputs = scenario.outputs.map(ref);
+      return scenario.kind === "scenario"
+        ? {
+            name: scenario.name,
+            dimensions: scenario.dimensions.map(dimension),
+            outputs,
+            samples: scenario.samples,
+          }
+        : {
+            kind: "sensitivity",
+            name: scenario.name,
+            inputs: scenario.inputs.map(ref),
+            steps: scenario.steps,
+            outputs,
+            samples: scenario.samples,
+          };
+    });
   }
   return `${JSON.stringify(file, null, 2)}\n`;
 }
@@ -517,23 +534,38 @@ function parseScenarios(value: unknown, sheets: Sheet[]): Scenario[] {
       }
       throw invalid("an invalid dimension");
     };
+    const refs = (list: unknown) => (Array.isArray(list) ? list : []).map(ref);
+    const base = {
+      id: crypto.randomUUID(),
+      name,
+      outputs: refs(scenario.outputs),
+      samples:
+        typeof scenario.samples === "number" && scenario.samples > 0
+          ? Math.floor(scenario.samples)
+          : DEFAULT_SCENARIO_SAMPLES,
+    };
+    if (scenario.kind === "sensitivity") {
+      const steps = Array.isArray(scenario.steps) ? scenario.steps : [DEFAULT_SENSITIVITY_STEP];
+      if (!steps.every((h) => typeof h === "number" && h > 0 && h < 1)) {
+        throw invalid("an invalid step");
+      }
+      return { ...base, kind: "sensitivity", inputs: refs(scenario.inputs), steps };
+    }
+    if (scenario.kind !== undefined && scenario.kind !== "scenario") {
+      throw invalid(`an unknown kind, ${String(scenario.kind)}`);
+    }
     const dimensions = (Array.isArray(scenario.dimensions) ? scenario.dimensions : []).map(
       dimension,
     );
-    const outputs = (Array.isArray(scenario.outputs) ? scenario.outputs : []).map(ref);
-    const samples =
-      typeof scenario.samples === "number" && scenario.samples > 0
-        ? Math.floor(scenario.samples)
-        : DEFAULT_SCENARIO_SAMPLES;
-    return { id: crypto.randomUUID(), name, dimensions, outputs, samples };
+    return { ...base, kind: "scenario", dimensions };
   });
 }
 
-/** The first free scenario name of the form "Scenario1", "Scenario2", … */
-export function nextScenarioName(workbook: Workbook): string {
+/** The first free scenario name of the form "Scenario1", "Scenario2", … (or another prefix). */
+export function nextScenarioName(workbook: Workbook, prefix = "Scenario"): string {
   const names = new Set((workbook.scenarios ?? []).map((scenario) => scenario.name));
   for (let n = 1; ; n++) {
-    if (!names.has(`Scenario${n}`)) return `Scenario${n}`;
+    if (!names.has(`${prefix}${n}`)) return `${prefix}${n}`;
   }
 }
 

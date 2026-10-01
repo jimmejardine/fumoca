@@ -72,9 +72,3 @@
 .cell[data-kind="pending"] {
   color: var(--mantine-color-dimmed);
 }
-
-.detailHistogram {
-  border-bottom: 1px solid var(--mantine-color-default-border);
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
-}

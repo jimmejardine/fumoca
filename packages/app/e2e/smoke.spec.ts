@@ -17,6 +17,12 @@ async function fileMenu(page: Page, item: "New" | "Save" | "Load") {
 
 const formulaBar = (page: Page) => page.getByLabel("Formula bar");
 
+/** The side panel's sheet list. The panel starts collapsed, so this opens it on Sheets first. */
+async function sheetList(page: Page) {
+  await page.getByRole("tab", { name: "Sheets" }).click();
+  return page.getByRole("navigation", { name: "Sheets" });
+}
+
 /** Edits a cell through the formula bar. */
 async function editCell(page: Page, row: number, col: number, text: string) {
   await cell(page, row, col).click();
@@ -67,7 +73,7 @@ test("the toolbar button replaces the model with the test model", async ({ page 
     "Prices",
     "Lookups",
   ]);
-  await expect(page.getByRole("navigation", { name: "Sheets" }).getByRole("button")).toHaveText([
+  await expect((await sheetList(page)).getByRole("button")).toHaveText([
     "Option pricing",
     "Functions",
     "Deterministic",
@@ -76,6 +82,38 @@ test("the toolbar button replaces the model with the test model", async ({ page 
   ]);
   await expect(cell(page, 0, 0)).toHaveText("Spot");
   await expect(cell(page, 0, 1)).toHaveText("100");
+});
+
+test("the side panel starts collapsed to its tabs, which open and close it", async ({ page }) => {
+  const sheets = page.getByRole("navigation", { name: "Sheets" });
+  const collapse = page.getByRole("button", { name: "Collapse side panel" });
+  // The scenario list is empty in a new model, so look for its button instead.
+  const newScenario = page.getByRole("button", { name: "New scenario" });
+  // Where the sheet area starts: <main> itself spans the page and makes room with padding.
+  const areaLeft = async () => (await tabs(page).first().boundingBox())?.x ?? Number.NaN;
+  await expect(page.getByRole("tab", { name: "Sheets" })).toBeVisible();
+  await expect(sheets).toBeHidden();
+  await expect(collapse).toBeHidden();
+  const collapsedLeft = await areaLeft();
+
+  // Clicking a tab opens the panel on it, and the handle on the divider collapses it.
+  await page.getByRole("tab", { name: "Sheets" }).click();
+  await expect(sheets).toBeVisible();
+  await expect.poll(areaLeft).toBeGreaterThan(collapsedLeft + 150);
+  await collapse.click();
+  await expect(sheets).toBeHidden();
+  await expect.poll(areaLeft).toBe(collapsedLeft);
+
+  // Clicking the open tab collapses the panel too.
+  await page.getByRole("tab", { name: "Scenarios" }).click();
+  await expect(newScenario).toBeVisible();
+  await page.getByRole("tab", { name: "Scenarios" }).click();
+  await expect(newScenario).toBeHidden();
+
+  // The panel reopens on the tab that was open last time.
+  await page.getByRole("tab", { name: "Scenarios" }).click();
+  await page.reload();
+  await expect(newScenario).toBeVisible();
 });
 
 test("sheets can be tiled side by side and reopened from the sheet list", async ({ page }) => {
@@ -99,7 +137,7 @@ test("sheets can be tiled side by side and reopened from the sheet list", async 
   await deterministic.click();
   await deterministic.locator(".dv-default-tab-action").click();
   await expect(deterministic).toHaveCount(0);
-  await page.getByRole("navigation", { name: "Sheets" }).getByText("Deterministic").click();
+  await (await sheetList(page)).getByText("Deterministic").click();
   await expect(tabs(page).filter({ hasText: "Deterministic" })).toHaveCount(1);
 });
 
@@ -656,6 +694,84 @@ test("cells are named in the name box, used in formulas, and jumped to", async (
   await expect(cell(page, 0, 0)).toHaveText("0.1");
 });
 
+test("a sensitivity analysis shows each input's elasticity on each output", async ({ page }) => {
+  // y1 = x1², y2 = x2 − x1 at x1 = 3, x2 = 10.
+  await editCell(page, 0, 0, "3"); // A1
+  await editCell(page, 1, 0, "10"); // A2
+  await editCell(page, 0, 1, "=A1^2"); // B1
+  await editCell(page, 1, 1, "=A2-A1"); // B2
+
+  await page.getByRole("tab", { name: "Sensitivities" }).click();
+  await page.getByRole("button", { name: "New analysis" }).click();
+  await expect(tabs(page).filter({ hasText: "Sensitivity1" })).toHaveCount(1);
+  const pick = async (noun: string, n: number, address: string) => {
+    await page.getByRole("button", { name: noun, exact: true }).click();
+    const field = page.getByLabel(`${noun} ${n}`, { exact: true });
+    await field.fill(`Sheet1!${address}`);
+    await field.press("Enter");
+    await expect(field).toHaveValue(`Sheet1!${address}`);
+  };
+  await pick("Input", 1, "A1");
+  await pick("Input", 2, "A2");
+  await pick("Output", 1, "B1");
+  await pick("Output", 2, "B2");
+  await expect(page.getByTestId("combination-count")).toHaveText(
+    "2 inputs × 1 step × (− and +) = 4 runs, plus the Baseline",
+  );
+
+  await page.getByRole("button", { name: "Run analysis" }).click();
+  await expect(page.getByTestId("scenario-progress")).toHaveText("Ran the Baseline and 4 runs");
+  const matrix = page.getByTestId("sensitivity-matrix");
+  const values = () => matrix.locator("tbody td button").allTextContents();
+  // Rows A1, A2; columns B1, B2. B1 = A1² has elasticity 2; B2 = A2 − A1 has −3/7 and 10/7.
+  await expect.poll(values).toEqual(["2", "-0.429", "0", "1.43"]);
+
+  // Sorting the inputs by their effect on B2 puts A2 first.
+  await matrix.getByRole("button", { name: "Sort inputs by Sheet1!B2" }).click();
+  await expect.poll(values).toEqual(["0", "1.43", "2", "-0.429"]);
+
+  // As the % change in the output for a 1% change in the input.
+  await page.getByText("%Δy", { exact: true }).click();
+  await expect.poll(values).toEqual(["0%", "+1.43%", "+2%", "-0.429%"]);
+
+  // A cell's charts: B1 is exact, so its distributions are described rather than drawn.
+  await matrix.getByRole("button", { name: "Sheet1!A1 on Sheet1!B1" }).click();
+  const charts = page.getByTestId("sensitivity-charts");
+  await expect(charts.getByText("Sheet1!B1: tornado, ±1% (Baseline 9)")).toBeVisible();
+  await expect(charts.getByText(/Sheet1!B1 is exact/)).toBeVisible();
+});
+
+test("the test model's option drivers move the call up and the put down with spot", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Test model" }).click();
+  await page.getByRole("tab", { name: "Sensitivities" }).click();
+  await page
+    .getByRole("navigation", { name: "Sensitivity analyses" })
+    .getByText("Option drivers")
+    .click();
+  await page.getByRole("button", { name: "Run analysis" }).click();
+  await expect(page.getByTestId("scenario-progress")).toHaveText("Ran the Baseline and 10 runs", {
+    timeout: 30_000,
+  });
+  const matrix = page.getByTestId("sensitivity-matrix");
+  const effect = async (input: string, output: string) =>
+    Number(
+      await matrix
+        .getByRole("button", { name: `${input} on 'Option pricing'!${output}` })
+        .textContent(),
+    );
+  expect(await effect("Spot", "B8")).toBeGreaterThan(0);
+  expect(await effect("Spot", "B9")).toBeLessThan(0);
+  // The exact Black–Scholes call's elasticity to spot is N(d1) × S / C ≈ 0.542 × 100 / 8.02.
+  expect(await effect("Spot", "B14")).toBeCloseTo(6.76, 1);
+
+  // A cell's tornado and distribution shift are drawn.
+  await matrix.getByRole("button", { name: "Volatility on 'Option pricing'!B8" }).click();
+  const charts = page.getByTestId("sensitivity-charts");
+  await expect(charts.locator("svg")).toHaveCount(2);
+});
+
 test("a scenario picks a named cell by clicking it, or by its name", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await page.getByRole("tab", { name: "Scenarios" }).click();
@@ -871,10 +987,7 @@ const RED = "rgba(250, 82, 82, 0.18)";
 test("Model → New sheet adds and opens a sheet", async ({ page }) => {
   await modelMenu(page, "New sheet");
   await expect(tabs(page)).toHaveText(["Sheet1", "Sheet2"]);
-  await expect(page.getByRole("navigation", { name: "Sheets" }).getByRole("button")).toHaveText([
-    "Sheet1",
-    "Sheet2",
-  ]);
+  await expect((await sheetList(page)).getByRole("button")).toHaveText(["Sheet1", "Sheet2"]);
   await expect(title(page)).toHaveText("Untitled •");
 });
 

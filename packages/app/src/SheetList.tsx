@@ -1,6 +1,6 @@
 import type { Sheet } from "@fumoca/storage";
 import { NavLink, ScrollArea } from "@mantine/core";
-import { IconTable, IconTimeline } from "@tabler/icons-react";
+import { sheetIcon } from "./icons";
 
 export interface SheetListProps {
   sheets: Sheet[];
@@ -16,16 +16,19 @@ export function SheetList({ sheets, activeSheetId, onOpen }: SheetListProps) {
   return (
     <ScrollArea>
       <nav aria-label="Sheets">
-        {sheets.map((sheet) => (
-          <NavLink
-            key={sheet.id}
-            component="button"
-            label={sheet.name}
-            leftSection={sheet.series ? <IconTimeline size={16} /> : <IconTable size={16} />}
-            active={sheet.id === activeSheetId}
-            onClick={() => onOpen(sheet.id)}
-          />
-        ))}
+        {sheets.map((sheet) => {
+          const Icon = sheetIcon(sheet);
+          return (
+            <NavLink
+              key={sheet.id}
+              component="button"
+              label={sheet.name}
+              leftSection={<Icon size={16} />}
+              active={sheet.id === activeSheetId}
+              onClick={() => onOpen(sheet.id)}
+            />
+          );
+        })}
       </nav>
     </ScrollArea>
   );

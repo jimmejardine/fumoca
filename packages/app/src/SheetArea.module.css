@@ -1,0 +1,17 @@
+/* A window's tab: its icon, then dockview's own tab (title and close button). */
+.tab {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding-left: 8px;
+}
+
+.tabIcon {
+  flex: none;
+  opacity: 0.75;
+}
+
+/* Dockview pads its tab on both sides; the icon brings its own space on the left. */
+.tab :global(.dv-default-tab) {
+  padding-left: 6px;
+}

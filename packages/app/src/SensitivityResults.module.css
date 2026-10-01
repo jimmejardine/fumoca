@@ -1,0 +1,15 @@
+/* The matrix keeps its full height, and the charts follow it: the results pane scrolls. */
+.view {
+  min-height: 100%;
+}
+
+.matrix {
+  flex: none;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.header {
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-sm);
+}

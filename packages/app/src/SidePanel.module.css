@@ -1,7 +1,16 @@
 /* Tabs down the panel's left edge, each named sideways, reading bottom to top. */
 .tabs {
+  position: relative;
   display: flex;
   height: 100%;
+}
+
+/* The collapse handle sits on the divider between the panel and the sheet area. */
+.collapse {
+  position: absolute;
+  top: calc(50% - 11px);
+  right: -11px;
+  z-index: 2;
 }
 
 .list {

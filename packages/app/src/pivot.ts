@@ -166,6 +166,57 @@ export function buildPivot(
 
 const HISTOGRAM_BINS = 64;
 
+/** A sample set to re-bin: a histogram window over its samples, or a single value (`mean`). */
+export interface BinnedPart {
+  count: number;
+  mean: number;
+  histogram: HistogramWindow | null;
+}
+
+/** The range covering every part's histogram window (or value). */
+export function histogramRange(parts: readonly BinnedPart[]): { lo: number; hi: number } {
+  const lo = Math.min(...parts.map((p) => p.histogram?.lo ?? p.mean));
+  const hi = Math.max(...parts.map((p) => p.histogram?.hi ?? p.mean));
+  return { lo, hi: hi > lo ? hi : lo + HISTOGRAM_BINS };
+}
+
+/**
+ * Re-bins parts' samples onto `bins` equal bins over [lo, hi), adding them together. A part's
+ * samples outside its own window (its tails) aren't counted. Each source bin is scaled to its
+ * share of the part's samples, then spread over the target bins it overlaps.
+ */
+export function rebin(
+  parts: readonly BinnedPart[],
+  lo: number,
+  hi: number,
+  bins = HISTOGRAM_BINS,
+): number[] {
+  const width = (hi - lo) / bins;
+  const counts = new Array<number>(bins).fill(0);
+  const binOf = (x: number) => Math.min(bins - 1, Math.max(0, Math.floor((x - lo) / width)));
+  for (const part of parts) {
+    if (!part.histogram) {
+      counts[binOf(part.mean)] = (counts[binOf(part.mean)] ?? 0) + part.count;
+      continue;
+    }
+    const { lo: from, hi: to, counts: source, below, above } = part.histogram;
+    const total = source.reduce((a, b) => a + b, 0);
+    const sourceWidth = (to - from) / source.length;
+    const inside = part.count * (1 - below - above);
+    source.forEach((n, i) => {
+      if (n === 0 || total === 0) return;
+      const weight = (n / total) * inside;
+      const a = from + i * sourceWidth;
+      const b = a + sourceWidth;
+      for (let bin = binOf(a); bin <= binOf(b); bin++) {
+        const overlap = Math.min(b, lo + (bin + 1) * width) - Math.max(a, lo + bin * width);
+        if (overlap > 0) counts[bin] = (counts[bin] ?? 0) + (weight * overlap) / sourceWidth;
+      }
+    });
+  }
+  return counts;
+}
+
 /**
  * Pools several results into one, as if their samples were combined (an equal-weight mixture):
  * counts, means and variances merge exactly (Chan et al.), and histograms are re-binned onto their
@@ -212,34 +263,8 @@ export function poolSummaries(list: OutputSummary[], samples: number): OutputSum
     m2 += part.m2 + (delta * delta * count * part.count) / total;
     count = total;
   }
-  const lo = Math.min(...parts.map((p) => p.histogram?.lo ?? p.mean));
-  const hi = Math.max(...parts.map((p) => p.histogram?.hi ?? p.mean));
-  const width = hi > lo ? (hi - lo) / HISTOGRAM_BINS : 1;
-  const counts = new Array<number>(HISTOGRAM_BINS).fill(0);
-  const binOf = (x: number) =>
-    Math.min(HISTOGRAM_BINS - 1, Math.max(0, Math.floor((x - lo) / width)));
-  for (const part of parts) {
-    if (!part.histogram) {
-      counts[binOf(part.mean)] = (counts[binOf(part.mean)] ?? 0) + part.count;
-      continue;
-    }
-    // Each source bin is scaled to its share of the part's samples, then spread over the target
-    // bins it overlaps.
-    const { lo: from, hi: to, counts: source, below, above } = part.histogram;
-    const total = source.reduce((a, b) => a + b, 0);
-    const sourceWidth = (to - from) / source.length;
-    const inside = part.count * (1 - below - above);
-    source.forEach((n, i) => {
-      if (n === 0 || total === 0) return;
-      const weight = (n / total) * inside;
-      const a = from + i * sourceWidth;
-      const b = a + sourceWidth;
-      for (let bin = binOf(a); bin <= binOf(b); bin++) {
-        const overlap = Math.min(b, lo + (bin + 1) * width) - Math.max(a, lo + bin * width);
-        if (overlap > 0) counts[bin] = (counts[bin] ?? 0) + (weight * overlap) / sourceWidth;
-      }
-    });
-  }
+  const { lo, hi } = histogramRange(parts);
+  const counts = rebin(parts, lo, hi);
   const tail = (side: "below" | "above") =>
     parts.reduce((sum, p) => sum + p.count * (p.histogram?.[side] ?? 0), 0) / Math.max(1, count);
   return {
@@ -249,7 +274,7 @@ export function poolSummaries(list: OutputSummary[], samples: number): OutputSum
     sd: count > 1 ? Math.sqrt(m2 / (count - 1)) : 0,
     histogram: {
       lo,
-      hi: lo + width * HISTOGRAM_BINS,
+      hi,
       counts,
       below: tail("below"),
       above: tail("above"),

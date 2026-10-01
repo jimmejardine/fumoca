@@ -1,0 +1,6 @@
+/* A result's histogram, drawn as a background like an uncertain grid cell's. */
+.histogram {
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}

@@ -5,7 +5,10 @@ import {
   combinationCount,
   combinations,
   createScenario,
+  createSensitivity,
   type Scenario,
+  sensitivityIndex,
+  type WhatIfScenario,
 } from "./scenario";
 import {
   addSheet,
@@ -21,7 +24,7 @@ import {
 const cell = (sheetId: string, address: string) => ({ sheetId, address });
 
 /** Interest rate: 3 alternatives; strategy: a group of 2 cells with 2 variants. */
-function example(sheetId: string): Scenario {
+function example(sheetId: string): WhatIfScenario {
   return {
     ...createScenario("Rates and strategy"),
     dimensions: [
@@ -101,6 +104,71 @@ describe("combinations", () => {
   });
 });
 
+describe("sensitivity analyses", () => {
+  const analysis = {
+    ...createSensitivity("Drivers"),
+    inputs: [cell("s", "B1"), cell("s", "B2")],
+    steps: [0.01, 0.1],
+  };
+
+  it("scale each input down and up by each step, one input at a time", () => {
+    expect(combinationCount(analysis)).toBe(8);
+    const runs = combinations(analysis);
+    expect(runs.map((run) => run.overrides)).toEqual([
+      [{ cell: cell("s", "B1"), scale: 0.99 }],
+      [{ cell: cell("s", "B1"), scale: 1.01 }],
+      [{ cell: cell("s", "B1"), scale: 0.9 }],
+      [{ cell: cell("s", "B1"), scale: 1.1 }],
+      [{ cell: cell("s", "B2"), scale: 0.99 }],
+      [{ cell: cell("s", "B2"), scale: 1.01 }],
+      [{ cell: cell("s", "B2"), scale: 0.9 }],
+      [{ cell: cell("s", "B2"), scale: 1.1 }],
+    ]);
+    expect(runs[sensitivityIndex(analysis, 1, 0, 1)]?.choices).toEqual(
+      new Map([
+        ["input", 1],
+        ["step", 0],
+        ["sign", 1],
+      ]),
+    );
+  });
+
+  it("start with a ±1% step and nothing to run", () => {
+    const empty = createSensitivity("Empty");
+    expect(empty.steps).toEqual([0.01]);
+    expect(combinations(empty)).toEqual([]);
+  });
+
+  it("are saved and loaded alongside what-if scenarios", () => {
+    const { workbook: base, sheet } = addSheet(createWorkbook());
+    const drivers = {
+      ...analysis,
+      inputs: [cell(sheet.id, "B1")],
+      outputs: [cell(sheet.id, "B9")],
+    };
+    const saved = serializeWorkbook(putScenario(putScenario(base, example(sheet.id)), drivers));
+    const loaded = parseWorkbook(saved);
+    const [whatIf, restored] = loaded.scenarios ?? [];
+    expect(whatIf?.kind).toBe("scenario");
+    const loadedSheet = loaded.sheets[1];
+    if (!restored || !loadedSheet) throw new Error("analysis not loaded");
+    expect({ ...restored, id: "" }).toEqual({
+      ...drivers,
+      id: "",
+      inputs: [cell(loadedSheet.id, "B1")],
+      outputs: [cell(loadedSheet.id, "B9")],
+    });
+  });
+
+  it("reject invalid steps and unknown kinds in files", () => {
+    const file = JSON.parse(serializeWorkbook(createWorkbook()));
+    file.scenarios = [{ kind: "sensitivity", name: "S", inputs: [], outputs: [], steps: [2] }];
+    expect(() => parseWorkbook(JSON.stringify(file))).toThrow(/invalid step/);
+    file.scenarios = [{ kind: "tornado", name: "S", outputs: [] }];
+    expect(() => parseWorkbook(JSON.stringify(file))).toThrow(/unknown kind/);
+  });
+});
+
 describe("scenarios in the workbook", () => {
   it("are kept through cell edits and new sheets", () => {
     const workbook = createWorkbook();
@@ -132,11 +200,10 @@ describe("scenarios in the workbook", () => {
     const [restored] = loaded.scenarios ?? [];
     if (!loadedInputs || !restored) throw new Error("scenario not loaded");
     // Ids are regenerated on load; everything else round-trips.
-    const withoutIds = (s: Scenario) => ({
-      ...s,
-      id: "",
-      dimensions: s.dimensions.map((d) => ({ ...d, id: "" })),
-    });
+    const withoutIds = (s: Scenario) =>
+      s.kind === "scenario"
+        ? { ...s, id: "", dimensions: s.dimensions.map((d) => ({ ...d, id: "" })) }
+        : { ...s, id: "" };
     expect(withoutIds(restored)).toEqual(withoutIds(example(loadedInputs.id)));
   });
 

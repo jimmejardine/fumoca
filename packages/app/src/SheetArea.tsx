@@ -2,19 +2,24 @@ import type { Scenario, SeriesSettings, Workbook } from "@fumoca/storage";
 import { Box, Center, Stack, Text, useComputedColorScheme } from "@mantine/core";
 import {
   type DockviewApi,
+  DockviewDefaultTab,
   DockviewReact,
+  type IDockviewPanelHeaderProps,
   type IDockviewPanelProps,
   themeDark,
   themeLight,
 } from "dockview-react";
 import { createContext, useContext, useState } from "react";
+import { SCENARIO_ICONS, sheetIcon } from "./icons";
 import { RenameColumnModal } from "./RenameColumnModal";
 import type { WorkbookResults } from "./recalc";
 import { ScenarioPanel } from "./ScenarioPanel";
-import { ScenarioControls, ScenarioResultsView, type ScenarioRunState } from "./ScenarioResults";
+import { ScenarioControls, type ScenarioRunState } from "./ScenarioResults";
 import { SeriesIssuesBar } from "./SeriesIssuesBar";
 import { SeriesToolbar } from "./SeriesToolbar";
+import classes from "./SheetArea.module.css";
 import { type CellEdit, SheetGrid } from "./SheetGrid";
+import { kindOf } from "./scenarioKinds";
 
 /**
  * The tabbed, tileable sheet area. Each open sheet is a dockview panel: sheets open as tabs, and a
@@ -104,23 +109,39 @@ function ScenarioTab({ params }: IDockviewPanelProps<ScenarioPanelParams>) {
   const scenario = context?.workbook.scenarios?.find((s) => s.id === params.scenarioId);
   if (!context || !scenario) return null;
   const run = context.scenarioRuns.get(scenario.id);
+  const kind = kindOf(scenario);
   return (
     <ScenarioPanel
       scenario={scenario}
       workbook={context.workbook}
       onChange={context.onScenarioChange}
+      definition={
+        <kind.Definition
+          scenario={scenario}
+          workbook={context.workbook}
+          onChange={context.onScenarioChange}
+        />
+      }
+      count={kind.count(scenario)}
+      samplesLabel={kind.samplesLabel}
+      placeholder={kind.placeholder}
       controls={
         <ScenarioControls
           scenario={scenario}
           workbook={context.workbook}
           run={run}
+          runLabel={kind.runLabel}
+          ready={kind.ready(scenario)}
+          hint={kind.hint}
+          unit={kind.unit}
+          noun={kind.noun}
           onRun={() => context.onRunScenario(scenario.id)}
           onStop={context.onStopScenario}
         />
       }
       results={
         run?.results ? (
-          <ScenarioResultsView workbook={context.workbook} run={run} results={run.results} />
+          <kind.Results workbook={context.workbook} run={run} results={run.results} />
         ) : undefined
       }
     />
@@ -128,6 +149,21 @@ function ScenarioTab({ params }: IDockviewPanelProps<ScenarioPanelParams>) {
 }
 
 const COMPONENTS = { sheet: SheetPanel, scenario: ScenarioTab };
+
+/** A window's tab: dockview's own, with the icon of what the window holds, as in the side panel. */
+function PanelTab(props: IDockviewPanelHeaderProps) {
+  const workbook = useContext(SheetAreaContext)?.workbook;
+  const id = props.api.id;
+  const sheet = workbook?.sheets.find((s) => s.id === id);
+  const scenario = workbook?.scenarios?.find((s) => s.id === id);
+  const Icon = sheet ? sheetIcon(sheet) : scenario ? SCENARIO_ICONS[scenario.kind] : null;
+  return (
+    <div className={classes.tab}>
+      {Icon && <Icon size={14} className={classes.tabIcon} />}
+      <DockviewDefaultTab {...props} />
+    </div>
+  );
+}
 
 /** Opens a scenario as a tab, or brings its existing tab to the front (SPECS.md §7). */
 export function openScenario(api: DockviewApi, scenario: Scenario): void {
@@ -181,6 +217,7 @@ export function SheetArea({ onReady }: SheetAreaProps) {
   return (
     <DockviewReact
       components={COMPONENTS}
+      defaultTabComponent={PanelTab}
       watermarkComponent={Watermark}
       theme={colorScheme === "dark" ? themeDark : themeLight}
       onReady={(event) => onReady(event.api)}

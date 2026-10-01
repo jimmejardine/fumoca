@@ -4,7 +4,6 @@ import {
   addSheet,
   cellName,
   cellNameError,
-  createScenario,
   createSeriesSheet,
   createWorkbook,
   FILE_EXTENSION,
@@ -51,7 +50,15 @@ import type { Recalculation, WorkbookResults } from "./recalc";
 import { emptyRun, type ScenarioRunState } from "./ScenarioResults";
 import { openScenario, openSheet, SheetArea, SheetAreaContext, showWorkbook } from "./SheetArea";
 import { type CellEdit, focusCell, focusCellBelow } from "./SheetGrid";
-import { SidePanel } from "./SidePanel";
+import {
+  loadSideTab,
+  SIDE_PANEL_WIDTH,
+  SIDE_TABS_WIDTH,
+  SidePanel,
+  type SideTab,
+  saveSideTab,
+} from "./SidePanel";
+import { SCENARIO_KINDS } from "./scenarioKinds";
 import { Toolbar } from "./Toolbar";
 import { createTestWorkbook } from "./testModel";
 
@@ -150,6 +157,11 @@ export function App() {
   const scenarioRunRef = useRef<{ scenarioId: string; cancel: () => void } | null>(null);
   const [statusDetail, setStatusDetail] = useState<string | undefined>(undefined);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
+  const [sideTab, setSideTab] = useState<SideTab>(() => loadSideTab());
+  const handleSideTabChange = useCallback((tab: SideTab) => {
+    setSideTab(tab);
+    saveSideTab(tab);
+  }, []);
   const [selections, setSelections] = useState<Map<string, string>>(new Map());
   const apiRef = useRef<DockviewApi | null>(null);
   const docRef = useRef(doc);
@@ -417,8 +429,9 @@ export function App() {
     if (apiRef.current && scenario) openScenario(apiRef.current, scenario);
   }, []);
 
-  const handleNewScenario = useCallback(() => {
-    const scenario = createScenario(nextScenarioName(docRef.current.workbook));
+  const handleNewScenario = useCallback((kind: Scenario["kind"]) => {
+    const { create, namePrefix } = SCENARIO_KINDS[kind];
+    const scenario = create(nextScenarioName(docRef.current.workbook, namePrefix));
     setDoc((d) => ({ ...d, workbook: putScenario(d.workbook, scenario), dirty: true }));
     if (apiRef.current) openScenario(apiRef.current, scenario);
   }, []);
@@ -591,7 +604,11 @@ export function App() {
     activeSheet && selectedAddress ? formatCellInput(activeSheet.cells[selectedAddress]) : "";
 
   return (
-    <AppShell header={{ height: HEADER_HEIGHT }} navbar={{ width: 240, breakpoint: 0 }} padding={0}>
+    <AppShell
+      header={{ height: HEADER_HEIGHT }}
+      navbar={{ width: sideTab ? SIDE_PANEL_WIDTH : SIDE_TABS_WIDTH, breakpoint: 0 }}
+      padding={0}
+    >
       <AppShell.Header>
         <MenuBar
           config={{ settings, gpuAvailable: gpuAvailable === true, onApply: handleApplySettings }}
@@ -684,6 +701,8 @@ export function App() {
       </AppShell.Header>
       <AppShell.Navbar>
         <SidePanel
+          tab={sideTab}
+          onTabChange={handleSideTabChange}
           sheets={doc.workbook.sheets}
           scenarios={doc.workbook.scenarios ?? []}
           activePanelId={activeSheetId}
