@@ -148,6 +148,42 @@ fn fm_normpdf(x: f32) -> f32 {
   return exp(-x * x / 2.0) / 2.5066282746310002;
 }
 
+// 1 for a finite value, 0 for NaN or infinity (an error). Tested on the bits, since compilers
+// may assume floats are never NaN.
+fn fm_finite(x: f32) -> f32 {
+  return select(0.0, 1.0, (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u);
+}
+
+// Inverse standard normal CDF: Acklam's rational approximation, as in the engine's
+// normalInverse, then one Newton step against fm_normcdf, since f32 rounding in Acklam's central
+// polynomial costs up to 1e-4. It works on the lower tail and mirrors it, because f32 can't tell
+// values of Φ close to 1 apart. NaN outside (0, 1), built from p's bits.
+fn fm_norminv(p: f32) -> f32 {
+  if (!(p > 0.0 && p < 1.0)) {
+    return bitcast<f32>(bitcast<u32>(p) | 0x7fc00000u);
+  }
+  let lower = min(p, 1.0 - p);
+  var x: f32;
+  if (lower < 0.02425) {
+    let q = sqrt(-2.0 * log(lower));
+    let n = ((((-0.00778489400243029 * q - 0.322396458041136) * q - 2.40075827716184) * q
+      - 2.54973253934373) * q + 4.37466414146497) * q + 2.93816398269878;
+    let d = (((0.00778469570904146 * q + 0.32246712907004) * q + 2.445134137143) * q
+      + 3.75440866190742) * q + 1.0;
+    x = n / d;
+  } else {
+    let q = lower - 0.5;
+    let r = q * q;
+    let n = (((((-39.6968302866538 * r + 220.946098424521) * r - 275.928510446969) * r
+      + 138.357751867269) * r - 30.6647980661472) * r + 2.50662827745924) * q;
+    let d = ((((-54.4760987982241 * r + 161.585836858041) * r - 155.698979859887) * r
+      + 66.8013118877197) * r - 13.2806815528857) * r + 1.0;
+    x = n / d;
+  }
+  x = x - (fm_normcdf(x) - lower) * 2.5066282746310002 * exp(x * x / 2.0);
+  return select(x, -x, p > 0.5);
+}
+
 fn fm_bool(b: bool) -> f32 {
   return select(0.0, 1.0, b);
 }

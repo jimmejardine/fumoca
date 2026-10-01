@@ -39,6 +39,12 @@ function unary(fn: UnaryFn, a: string): string {
       return `fm_ln(${a})`;
     case "abs":
       return `abs(${a})`;
+    case "floor":
+      return `floor(${a})`;
+    case "finite":
+      return `fm_finite(${a})`;
+    case "norminv":
+      return `fm_norminv(${a})`;
     case "normcdf":
       return `fm_normcdf(${a})`;
     case "normpdf":

@@ -128,6 +128,7 @@ describe("test model", () => {
     ["B20", "2X + 3", 23, 6],
     ["B21", "X + X", 20, 6],
     ["B22", "X + independent X", 20, 3 * Math.SQRT2],
+    ["B25", "NORM.INV(RAND(), 100, 10)", 100, 10],
   ])("sums of normals: %s (%s) has mean %d and SD %d", async (address, _, mean, sd) => {
     const backend: Backend = {
       name: "cpu",
@@ -148,5 +149,27 @@ describe("test model", () => {
     // Mean within 5 standard errors; SD within 2%.
     expect(Math.abs(result.mean - mean)).toBeLessThan((5 * sd) / Math.sqrt(count));
     expect(Math.abs(result.sd - sd) / sd).toBeLessThan(0.02);
+  });
+
+  it("gives Excel's answer for every function example on the Deterministic sheet", () => {
+    const workbook = createTestWorkbook();
+    const sheetIndex = workbook.sheets.findIndex((s) => s.name === "Deterministic");
+    const sheet = workbook.sheets[sheetIndex];
+    if (!sheet) throw new Error("No deterministic sheet");
+    const { program, sheets } = compileWorkbook(
+      workbook.sheets.map((s) => ({ name: s.name, cells: s.cells, names: s.names ?? {} })),
+    );
+    const rows = Object.keys(sheet.cells)
+      .filter((address) => /^C\d+$/.test(address) && typeof sheet.cells[address] === "number")
+      .map((address) => Number(address.slice(1)));
+    expect(rows.length).toBeGreaterThanOrEqual(26);
+    const outputs = rows.map((row) => `${sheetIndex}!B${row}`);
+    const results = evaluateCpu(program, { seed: 1, iterationStart: 0, count: 1, outputs });
+    for (const row of rows) {
+      const label = String(sheet.cells[`A${row}`]);
+      expect(sheets[sheetIndex]?.errors.get(`B${row}`), label).toBeUndefined();
+      const expected = Number(sheet.cells[`C${row}`]);
+      expect(results.get(`${sheetIndex}!B${row}`)?.[0], label).toBeCloseTo(expected, 10);
+    }
   });
 });

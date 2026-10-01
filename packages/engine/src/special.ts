@@ -47,3 +47,45 @@ export function normalCdf(x: number): number {
 export function normalPdf(x: number): number {
   return Math.exp((-x * x) / 2) / Math.sqrt(2 * Math.PI);
 }
+
+/** Acklam's coefficients for the inverse normal CDF: central region (a, b) and tails (c, d). */
+const ACKLAM = {
+  a: [
+    -39.6968302866538, 220.946098424521, -275.928510446969, 138.357751867269, -30.6647980661472,
+    2.50662827745924,
+  ],
+  b: [-54.4760987982241, 161.585836858041, -155.698979859887, 66.8013118877197, -13.2806815528857],
+  c: [
+    -0.00778489400243029, -0.322396458041136, -2.40075827716184, -2.54973253934373,
+    4.37466414146497, 2.93816398269878,
+  ],
+  d: [0.00778469570904146, 0.32246712907004, 2.445134137143, 3.75440866190742],
+};
+
+/** The lower tail's crossover in Acklam's algorithm. */
+export const NORMAL_INVERSE_LOW = 0.02425;
+
+/**
+ * Inverse standard normal CDF, Φ⁻¹(p), for p in (0, 1); NaN outside it (Excel's #NUM!).
+ * P. J. Acklam's rational approximation (relative error 1.15e-9), which the GPU prelude mirrors
+ * in f32, then one Halley step against `normalCdf` to reach double precision on the CPU.
+ */
+export function normalInverse(p: number): number {
+  if (!(p > 0 && p < 1)) return Number.NaN;
+  const { a, b, c, d } = ACKLAM;
+  const poly = (k: number[], x: number) => k.reduce((acc, coefficient) => acc * x + coefficient, 0);
+  let x: number;
+  if (p < NORMAL_INVERSE_LOW || p > 1 - NORMAL_INVERSE_LOW) {
+    const q = Math.sqrt(-2 * Math.log(p < 0.5 ? p : 1 - p));
+    const tail = poly(c, q) / (poly(d, q) * q + 1);
+    x = p < 0.5 ? tail : -tail;
+  } else {
+    const q = p - 0.5;
+    const r = q * q;
+    x = (poly(a, r) * q) / (poly(b, r) * r + 1);
+  }
+  // Halley's method: the error in the CDF over the density, corrected for curvature.
+  const e = normalCdf(x) - p;
+  const u = e * Math.sqrt(2 * Math.PI) * Math.exp((x * x) / 2);
+  return x - u / (1 + (x * u) / 2);
+}

@@ -6,6 +6,7 @@ import {
   dependencyHue,
   GOLDEN_ANGLE,
   referenceColors,
+  SIDES,
 } from "./dependencyColors";
 
 describe("dependency colours", () => {
@@ -54,8 +55,9 @@ describe("dependencyHighlights", () => {
     const workbook = setCell(withInputs, model.id, "C1", `=A1 + ${inputs.name}!B2 * A1`);
     const formula = workbook.sheets[0]?.cells.C1;
     const highlights = dependencyHighlights(workbook, model.id, formula, "light");
-    expect(highlights.get(model.id)).toEqual(new Map([["A1", dependencyColor(0, "light")]]));
-    expect(highlights.get(inputs.id)).toEqual(new Map([["B2", dependencyColor(1, "light")]]));
+    const all = (i: number) => ({ color: dependencyColor(i, "light"), sides: SIDES.all });
+    expect(highlights.get(model.id)).toEqual(new Map([["A1", all(0)]]));
+    expect(highlights.get(inputs.id)).toEqual(new Map([["B2", all(1)]]));
     expect(dependencyHighlights(workbook, model.id, 42, "light").size).toBe(0);
   });
 
@@ -67,5 +69,22 @@ describe("dependencyHighlights", () => {
     const highlights = dependencyHighlights(withFormula, model.id, "=Nowhere!B2 + B3", "light");
     expect([...highlights.keys()]).toEqual([model.id]);
     expect([...(highlights.get(model.id)?.keys() ?? [])]).toEqual(["B3"]);
+  });
+
+  it("outlines a range as one rectangle, in one colour for both its corners", () => {
+    const workbook = createWorkbook();
+    const model = workbook.sheets[0];
+    if (!model) throw new Error("no sheet");
+    const formula = "=SUM(A1:B3) + C1";
+    const colors = referenceColors(formula, "light");
+    expect([...colors.keys()]).toEqual(["A1:B3", "C1"]);
+    const marks = dependencyHighlights(workbook, model.id, formula, "light").get(model.id);
+    const color = dependencyColor(0, "light");
+    const { top, right, bottom, left } = SIDES;
+    expect(marks?.get("A1")).toEqual({ color, sides: top | left });
+    expect(marks?.get("B1")).toEqual({ color, sides: top | right });
+    expect(marks?.get("A2")).toEqual({ color, sides: left });
+    expect(marks?.get("B3")).toEqual({ color, sides: bottom | right });
+    expect(marks?.get("C1")).toEqual({ color: dependencyColor(1, "light"), sides: SIDES.all });
   });
 });

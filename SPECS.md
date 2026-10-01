@@ -149,6 +149,14 @@ Every date value in fumoca is **tagged with a granularity** at all times. A date
 - References:
   - Single cell: `A1`, `$A$1`, `A$1`, `$A1`
   - Range: `A1:B10`
+    - **Implemented** as function arguments (`SUM`, `INDEX`, `VLOOKUP`, …), on the formula's sheet or another: `Inputs!$B$3:$B$9`.
+    - **How it works:** a range is expanded into its cells when the formula is compiled, so it needs nothing new in the CPU or GPU engines. A range covers at most 10,000 cells.
+    - **Copying:** each corner moves on its own, keeping its `$` anchors, as in Excel.
+    - **Highlighting:** the range is outlined as one rectangle, in one colour.
+    - **Not yet:**
+      - whole columns or rows (`A:A`, `1:1`);
+      - a sheet name on both corners;
+      - ranges outside a function (`=A1:A3+1`), which give `#VALUE!` until arrays can spill.
   - Another worksheet: `Sheet2!A1`, or `'My Sheet'!A1:B10` when the name has spaces
     - **Implemented** for single cells, as in Excel. A name is quoted when it isn't a plain identifier, and a quote inside a name is doubled (`'It''s'!A1`). Sheet names match in any case.
     - An unknown sheet gives `#REF!`. Cycles across sheets give `#CIRC!`.
@@ -178,6 +186,19 @@ Every date value in fumoca is **tagged with a granularity** at all times. A date
 - **Lookup:** `INDEX`, `MATCH`, `VLOOKUP`, `HLOOKUP`, `XLOOKUP`, plus time-series lookups (§5.3)
 - **Random (Excel built-ins):** `RAND`, `RANDBETWEEN`. See §4.4 for how they behave in fumoca.
 - **Statistical (Excel built-ins):** `NORM.DIST`, `NORM.INV`, `NORM.S.DIST`, `NORM.S.INV`, `LOGNORM.DIST`, `LOGNORM.INV`, `BETA.DIST`, `BETA.INV`, `GAMMA.DIST`, `GAMMA.INV`, and similar, with Excel's exact names, arguments and parameterisation
+
+**Implemented so far:**
+- **Math:** `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `COUNT`, `SUMPRODUCT`, `ROUND`, `ROUNDUP`, `ROUNDDOWN`, `TRUNC`, `INT`, `MOD`, `ABS`, `SQRT`, `EXP`, `LN`, `POWER`.
+  - The range functions skip empty and text cells, as Excel does.
+- **Logic:** `IF`, `AND`, `OR`, `NOT`, `IFERROR`.
+- **Lookup:** `INDEX`, `MATCH` (types 1, 0 and −1), `VLOOKUP`, `HLOOKUP`.
+  - `MATCH`'s type and the lookups' approximate/exact flag must be written as numbers, not calculated.
+  - A failed lookup is `#N/A` and an index out of range is `#REF!`. Both are run-time errors, which `IFERROR` catches.
+- **Random and statistical:**
+  - `RAND`, `NORM.S.DIST`/`NORMSDIST`;
+  - `NORM.S.INV`/`NORMSINV`, `NORM.INV`/`NORMINV`, `LOGNORM.INV`/`LOGINV`, so `=NORM.INV(RAND(), mean, sd)` works.
+- **Finance:** `RRI`.
+- **Not yet:** `XLOOKUP`, `RANDBETWEEN`, the other distributions' CDFs and inverses, and text functions (text values aren't supported yet).
 - **Distributions:** see §6.2
 
 ### 4.3 Evaluation
@@ -217,6 +238,9 @@ Every date value in fumoca is **tagged with a granularity** at all times. A date
   - They follow Excel's naming style: upper case, with dotted suffixes such as `.INV` and `.DIST`.
 - **Documented deviations:** any deliberate difference from Excel's behaviour is listed in the user documentation with the reason. Examples:
   - Circular references are always errors, and there is no iterative calculation at first.
+  - `IFERROR` catches errors in its own formula and at run time, but an error in a cell it refers to still propagates.
+  - `ROUND` works in binary floating point: `ROUND(2.675, 2)` is 2.67, where Excel gives 2.68.
+  - Run-time errors reach a cell as `#NUM!` (not a number: a failed lookup, a negative square root) or `#DIV/0!` (infinite), rather than Excel's particular code, such as `#N/A` or `#REF!`.
   - Adding a number to an hour-, week-, month-, quarter- or year-granular date moves by whole periods, not days (§3.1). Day dates behave exactly as in Excel.
 
 ---

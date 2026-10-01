@@ -8,8 +8,21 @@
 
 export type Reg = number;
 
-/** `normcdf` and `normpdf` are the standard normal CDF Φ and density φ. */
-export type UnaryFn = "neg" | "sqrt" | "exp" | "ln" | "abs" | "normcdf" | "normpdf";
+/**
+ * `normcdf` and `normpdf` are the standard normal CDF Φ and density φ, and `norminv` is Φ⁻¹ (NaN
+ * outside (0, 1)). `finite` is 1 for a finite value and 0 for NaN or ±infinity (an error).
+ */
+export type UnaryFn =
+  | "neg"
+  | "sqrt"
+  | "exp"
+  | "ln"
+  | "abs"
+  | "floor"
+  | "finite"
+  | "normcdf"
+  | "normpdf"
+  | "norminv";
 
 export type BinaryFn =
   | "add"

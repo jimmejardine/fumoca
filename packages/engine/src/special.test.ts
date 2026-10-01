@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalCdf, normalPdf } from "./special";
+import { normalCdf, normalInverse, normalPdf } from "./special";
 
 describe("normalCdf", () => {
   // Reference values of Φ(x) to 16 significant digits.
@@ -37,5 +37,23 @@ describe("normalPdf", () => {
     [-2, 0.05399096651318806],
   ])("φ(%d) = %d", (x, expected) => {
     expect(normalPdf(x)).toBeCloseTo(expected, 15);
+  });
+});
+
+describe("normalInverse", () => {
+  it("inverts normalCdf to double precision, in the centre and the tails", () => {
+    for (const p of [1e-12, 1e-6, 0.001, 0.02, 0.02425, 0.1, 0.5, 0.7, 0.97575, 0.999, 1 - 1e-9]) {
+      const x = normalInverse(p);
+      expect(Math.abs(normalCdf(x) - p) / Math.min(p, 1 - p)).toBeLessThan(1e-9);
+    }
+  });
+
+  it("matches Excel's NORM.S.INV", () => {
+    expect(normalInverse(0.975)).toBeCloseTo(1.959963984540054, 13);
+    expect(normalInverse(0.05)).toBeCloseTo(-1.6448536269514729, 13);
+  });
+
+  it("is NaN outside (0, 1)", () => {
+    for (const p of [0, 1, -0.1, 2, Number.NaN]) expect(normalInverse(p)).toBeNaN();
   });
 });

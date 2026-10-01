@@ -5,6 +5,7 @@
  */
 
 export { CellAccumulator, mergeSummaries, summarizeBatch } from "./accumulator";
+export { addressPosition, columnLetters, columnNumber, rangeAddresses } from "./addresses";
 export { uncertainCells } from "./analysis";
 export type { Backend, BatchSummary, Samples } from "./backend";
 export {

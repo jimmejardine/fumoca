@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 const tabs = (page: Page) => page.locator(".dv-tab");
 const cell = (page: Page, row: number, col: number) =>
@@ -33,6 +33,19 @@ async function editCell(page: Page, row: number, col: number, text: string) {
   await formulaBar(page).fill(text);
   await formulaBar(page).press("Enter");
 }
+
+/** A cell's dependency border colour (drawn on an overlay), or null if it has none. */
+const border = (page: Page, row: number, col: number) => borderOf(cell(page, row, col));
+const borderOf = (target: Locator) =>
+  target.evaluate((element) => {
+    const style = getComputedStyle(element, "::after");
+    const drawn = ["top", "right", "bottom", "left"].find(
+      (side) => style.getPropertyValue(`border-${side}-width`) !== "0px",
+    );
+    return style.content === "none" || !drawn
+      ? null
+      : style.getPropertyValue(`border-${drawn}-color`);
+  });
 
 const fontWeight = (page: Page, row: number, col: number) =>
   cell(page, row, col).evaluate((element) => getComputedStyle(element).fontWeight);
@@ -307,11 +320,7 @@ test("a formula's dependencies get coloured borders, matching the formula's text
 }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await tabs(page).filter({ hasText: "Deterministic" }).click();
-  const outline = (row: number, col: number) =>
-    cell(page, row, col).evaluate((element) => {
-      const style = getComputedStyle(element);
-      return style.outlineStyle === "none" ? null : style.outlineColor;
-    });
+  const outline = (row: number, col: number) => border(page, row, col);
   const textColor = (label: string, address: string) =>
     page
       .getByLabel(label)
@@ -344,6 +353,39 @@ test("a formula's dependencies get coloured borders, matching the formula's text
   await page.keyboard.press("F2");
   await expect(page.getByLabel("Cell editor")).toHaveValue("=B1 * 1.08 - 40");
   expect(await textColor("Cell editor", "B1")).toBe(await outline(0, 1));
+});
+
+test("ranges sum, look up, are outlined as one rectangle, and move when copied", async ({
+  page,
+}) => {
+  // A small price table: tiers in A, prices in B.
+  await editCell(page, 0, 0, "0");
+  await editCell(page, 1, 0, "100");
+  await editCell(page, 2, 0, "1000");
+  await editCell(page, 0, 1, "50");
+  await editCell(page, 1, 1, "40");
+  await editCell(page, 2, 1, "30");
+  await editCell(page, 0, 3, "=SUM(B1:B3)"); // D1
+  await editCell(page, 1, 3, "=VLOOKUP(250, A1:B3, 2)"); // D2
+  await editCell(page, 2, 3, "=INDEX(B1:B3, MATCH(1000, A1:A3, 0))"); // D3
+  await expect(cell(page, 0, 3)).toHaveText("120");
+  await expect(cell(page, 1, 3)).toHaveText("40");
+  await expect(cell(page, 2, 3)).toHaveText("30");
+
+  // The range is outlined as a whole: the corners have borders, the cells outside don't.
+  await cell(page, 0, 3).click();
+  await expect(page.getByLabel("Cell address")).toHaveValue("D1");
+  await expect.poll(() => border(page, 0, 1)).not.toBeNull();
+  expect(await border(page, 2, 1)).toBe(await border(page, 0, 1));
+  expect(await border(page, 0, 0)).toBeNull();
+
+  // Copying D1 to E1 moves the range a column across, as in Excel.
+  await page.keyboard.press("Control+c");
+  await cell(page, 0, 4).click();
+  await page.keyboard.press("Control+v");
+  await cell(page, 0, 4).click();
+  await expect(formulaBar(page)).toHaveValue("=SUM(C1:C3)");
+  await expect(cell(page, 0, 4)).toHaveText("0");
 });
 
 test("clicking a cell while editing a formula inserts its address", async ({ page }) => {
@@ -393,8 +435,7 @@ test("arrow keys point at cells while a reference can go in the cell editor", as
   const editor = page.getByLabel("Cell editor");
   await editCell(page, 0, 0, "3"); // A1
   await editCell(page, 0, 1, "4"); // B1
-  const outlined = (row: number, col: number) =>
-    cell(page, row, col).evaluate((element) => getComputedStyle(element).outlineStyle !== "none");
+  const outlined = async (row: number, col: number) => (await border(page, row, col)) !== null;
 
   await cell(page, 2, 2).click();
   await expect(address).toHaveValue("C3");
@@ -455,11 +496,7 @@ test("formulas reference cells on other sheets, and can point at them", async ({
   // Selecting B1 outlines Sheet2!A1, in the colour it has in the formula.
   await cellIn(0, 0, 1).click();
   await expect(page.getByLabel("Cell address")).toHaveValue("B1");
-  const outline = () =>
-    cellIn(1, 0, 0).evaluate((element) => {
-      const style = getComputedStyle(element);
-      return style.outlineStyle === "none" ? null : style.outlineColor;
-    });
+  const outline = () => borderOf(cellIn(1, 0, 0));
   await expect.poll(outline).not.toBeNull();
   const reference = formulaBar(page).locator("..").locator('[data-reference="sheet2!A1"]');
   expect(await reference.evaluate((element) => getComputedStyle(element).color)).toBe(

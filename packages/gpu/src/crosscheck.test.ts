@@ -98,6 +98,9 @@ describe("CPU and GPU backends", () => {
       B5: "=-A4^2 + 50%",
       B6: "=(A1 > 100) + (A4 <= 2) * 2 + (A5 = A5) * 4",
       B7: "=NORM.S.DIST((A1 - 100) / 10, TRUE) + NORM.S.DIST(A3 - 1, FALSE) + NORMSDIST(-A4)",
+      // Continuous functions only here: f32 and f64 can fall either side of a step (INT, MATCH).
+      B8: "=NORM.INV(A5, 2, 3) + NORM.S.INV(A5) + LOGNORM.INV(A5, 0, 0.5)",
+      B9: "=IFERROR(LN(A1 - 100), -1) + SUM(A1:A3) + MAX(A2:A4) + AVERAGE(B1:B2) + INDEX(A1:A5, 3)",
     };
     const outputs = Object.keys(model);
     const tolerance = 1e-4;
@@ -129,6 +132,15 @@ describe("CPU and GPU backends", () => {
       A2: "=A1 * 1.08 - 40",
       A3: "=SQRT(A2) + LN(A1) - EXP(0.5)",
       A4: "=IF(A2 > 1000, MAX(A2, A3), MIN(A2, A3)) + 2^10 + 12.5%",
+      A5: "=INT(A2 / 7) + ROUND(A3, 2) + MOD(A2, 7) + RRI(5, 100, A2) + AND(A1, A2) + OR(0, A1)",
+      A6: "=MATCH(A2, C1:C3) + INDEX(C1:D3, 2, 2) + VLOOKUP(A2, C1:D3, 2) + SUMPRODUCT(C1:C3, D1:D3)",
+      A7: "=IFERROR(LN(-A1), 3) + IFERROR(INDEX(C1:C3, 4), 5) + NORM.S.INV(0.975)",
+      C1: 0,
+      C2: 1000,
+      C3: 2000,
+      D1: 5,
+      D2: 6,
+      D3: 7,
     };
     const outputs = Object.keys(model);
     const options = { seed: 1, iterationStart: 0, count: 1024, outputs };

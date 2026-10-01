@@ -10,13 +10,19 @@
  * a cell reference. Sheet names with spaces are quoted: `'Interest Rates'[Rate]@2027`.
  *
  * Cells on other sheets are referenced as in Excel: `Inputs!B3`, or `'Interest Rates'!B3`.
+ * Ranges are two corners, as in Excel: `A1:B5`, `Inputs!$B$3:$B$9`. They're only valid as function
+ * arguments (SUM, INDEX, …); there are no whole-column or whole-row ranges yet.
  */
+
+import { columnLetters, columnNumber } from "./addresses";
 
 export type BinaryOperator = "+" | "-" | "*" | "/" | "^" | "=" | "<>" | "<" | ">" | "<=" | ">=";
 
 export type Expr =
   | { type: "number"; value: number }
   | { type: "ref"; address: string; sheet?: string }
+  /** A rectangle of cells, from one corner to the other, on the formula's sheet or `sheet`. */
+  | { type: "range"; from: string; to: string; sheet?: string }
   | { type: "negate"; operand: Expr }
   | { type: "binary"; operator: BinaryOperator; left: Expr; right: Expr }
   | { type: "call"; name: string; args: Expr[] }
@@ -48,7 +54,24 @@ type Token =
 const CELL_REF = /^\$?([A-Za-z]{1,3})\$?([0-9]+)(?![A-Za-z0-9_.(])/;
 const NUMBER = /^(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_.]*/;
-const OPERATORS = ["<>", "<=", ">=", "+", "-", "*", "/", "^", "%", "=", "<", ">", "(", ")", ","];
+const OPERATORS = [
+  "<>",
+  "<=",
+  ">=",
+  "+",
+  "-",
+  "*",
+  "/",
+  "^",
+  "%",
+  "=",
+  "<",
+  ">",
+  "(",
+  ")",
+  ",",
+  ":",
+];
 const QUOTED_SHEET = /^'((?:[^']|'')+)'/;
 /** A reference to a cell on another sheet: `Inputs!B3` or `'Interest Rates'!$B$3`. */
 const SHEET_REF =
@@ -277,6 +300,20 @@ class Parser {
       : { type: "lookup", sheet, column, when };
   }
 
+  /** Parses the rest of a range, after its first corner: `:B5`. */
+  private range(from: string, sheet: string | undefined): Expr {
+    this.expectOp(":");
+    const corner = this.next();
+    if (corner.kind !== "ref" || corner.sheet !== undefined) {
+      throw new FormulaSyntaxError(
+        `Expected a cell after ':', as in A1:B5, but found ${describe(corner)}`,
+      );
+    }
+    return sheet === undefined
+      ? { type: "range", from, to: corner.address }
+      : { type: "range", from, to: corner.address, sheet };
+  }
+
   private primary(): Expr {
     const token = this.next();
     switch (token.kind) {
@@ -285,10 +322,11 @@ class Parser {
       case "refError":
         return { type: "refError" };
       case "ref":
-        // A sheet whose name looks like a cell reference, e.g. Q1[Rate]@2027.
+        if (this.peekOp() === ":") return this.range(token.address, token.sheet);
         if (token.sheet !== undefined) {
           return { type: "ref", address: token.address, sheet: token.sheet };
         }
+        // A sheet whose name looks like a cell reference, e.g. Q1[Rate]@2027.
         if (this.startsLookup()) return this.lookup(token.text);
         return { type: "ref", address: token.address };
       case "sheet":
@@ -358,13 +396,21 @@ export function parseFormula(text: string): Expr {
   return new Parser(tokenize(body)).parse();
 }
 
-/** A cell reference in formula text, with its span (offsets into the text as given). */
+/**
+ * A cell reference in formula text, with its span (offsets into the text as given). Each corner
+ * of a range is a reference of its own, so the corners move independently when a formula is
+ * copied; each corner names the other, in `rangeTo` and `rangeFrom`.
+ */
 export interface FormulaReference {
   address: string;
   /** The sheet named in the reference (`Inputs!B3`), or undefined for the formula's own sheet. */
   sheet?: string;
   start: number;
   end: number;
+  /** For a range's first corner, the address of its opposite corner. */
+  rangeTo?: string;
+  /** For a range's second corner, the address of its first corner. */
+  rangeFrom?: string;
 }
 
 /** Writes a reference to a cell on a sheet, quoting the sheet name if it needs it. */
@@ -383,17 +429,26 @@ export function formulaReferences(text: string): FormulaReference[] {
   if (!text.startsWith("=")) return [];
   const tokens = tokenize(text.slice(1), true);
   const references: FormulaReference[] = [];
+  const isColon = (token: Token | undefined) => token?.kind === "op" && token.op === ":";
   tokens.forEach((token, i) => {
     if (token.kind !== "ref") return;
-    const next = tokens[i + 1]?.kind;
-    if (next === "column" || next === "at") return;
+    const next = tokens[i + 1];
+    if (next?.kind === "column" || next?.kind === "at") return;
     const start = token.start + 1;
     const end = start + token.text.length;
-    references.push(
-      token.sheet === undefined
-        ? { address: token.address, start, end }
-        : { address: token.address, sheet: token.sheet, start, end },
-    );
+    const reference: FormulaReference = { address: token.address, start, end };
+    if (token.sheet !== undefined) reference.sheet = token.sheet;
+    const corner = tokens[i + 2];
+    if (isColon(next) && corner?.kind === "ref" && corner.sheet === undefined) {
+      reference.rangeTo = corner.address;
+    }
+    const previous = tokens[i - 2];
+    if (isColon(tokens[i - 1]) && previous?.kind === "ref" && token.sheet === undefined) {
+      reference.rangeFrom = previous.address;
+      // The second corner is on the first corner's sheet.
+      if (previous.sheet !== undefined) reference.sheet = previous.sheet;
+    }
+    references.push(reference);
   });
   return references;
 }
@@ -401,17 +456,6 @@ export function formulaReferences(text: string): FormulaReference[] {
 /** A cell reference's parts: an optional sheet prefix, and `$` anchors on column and row. */
 const REFERENCE_PARTS =
   /^((?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)$/;
-
-const columnNumber = (letters: string) =>
-  [...letters.toUpperCase()].reduce((n, letter) => n * 26 + letter.charCodeAt(0) - 64, 0);
-
-function columnLetters(n: number): string {
-  let letters = "";
-  for (let rest = n; rest > 0; rest = Math.floor((rest - 1) / 26)) {
-    letters = String.fromCharCode(65 + ((rest - 1) % 26)) + letters;
-  }
-  return letters;
-}
 
 /**
  * Adjusts a formula copied `dx` columns and `dy` rows away, as Excel does: relative references

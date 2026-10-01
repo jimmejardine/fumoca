@@ -33,7 +33,7 @@ import { notifications } from "@mantine/notifications";
 import type { DockviewApi } from "dockview-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { formatCellInput, parseCellInput } from "./cellInput";
-import { dependencyHighlights } from "./dependencyColors";
+import { type DependencyMark, dependencyHighlights } from "./dependencyColors";
 import { EngineClient } from "./engine/client";
 import {
   DEFAULT_SETTINGS,
@@ -533,7 +533,7 @@ export function App() {
     const sheet = doc.workbook.sheets.find((s) => s.id === activeSheetId);
     return sheet && selectedInActive
       ? dependencyHighlights(doc.workbook, sheet.id, sheet.cells[selectedInActive], colorScheme)
-      : new Map<string, Map<string, string>>();
+      : new Map<string, Map<string, DependencyMark>>();
   }, [doc.workbook, activeSheetId, selectedInActive, colorScheme, draft]);
 
   const context = useMemo(

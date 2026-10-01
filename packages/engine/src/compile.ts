@@ -1,3 +1,4 @@
+import { addressPosition, rangeAddresses } from "./addresses";
 import type { BinaryFn, DistKind, Op, Program, Reg, UnaryFn } from "./ir";
 import { type BinaryOperator, type Expr, type LookupTime, parseFormula } from "./parser";
 import { type Granularity, granularityOf } from "./periods";
@@ -7,7 +8,15 @@ import { hash32 } from "./random";
 export type CellInputs = Record<string, number | string>;
 
 /** Spreadsheet error codes a cell can show (SPECS.md §4.3). */
-export type ErrorCode = "#NAME?" | "#VALUE!" | "#CIRC!" | "#ERROR!" | "#REF!" | "#N/A";
+export type ErrorCode =
+  | "#NAME?"
+  | "#VALUE!"
+  | "#CIRC!"
+  | "#ERROR!"
+  | "#REF!"
+  | "#N/A"
+  | "#DIV/0!"
+  | "#NUM!";
 
 export interface CellError {
   code: ErrorCode;
@@ -113,6 +122,16 @@ const GRANULARITY_NAMES: Record<Granularity, string> = {
 
 function normalizeAddress(address: string): string {
   return address.replaceAll("$", "").toUpperCase();
+}
+
+/** The most cells a range may cover: each is expanded into the compiled program. */
+export const MAX_RANGE_CELLS = 10_000;
+
+/** A range's cells, resolved: its shape, and every cell's key, row by row. */
+interface RangeCells {
+  rows: number;
+  columns: number;
+  keys: string[];
 }
 
 /**
@@ -316,8 +335,38 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     return cellKey(target, normalizeAddress(ref.address));
   };
 
+  /** Resolves a range to its cells, row by row. */
+  const resolveRange = (
+    range: { from: string; to: string; sheet?: string },
+    fromSheet: number,
+  ): RangeCells => {
+    const sheetIndex = splitCellKey(
+      resolveRef(
+        range.sheet === undefined
+          ? { address: range.from }
+          : { address: range.from, sheet: range.sheet },
+        fromSheet,
+      ),
+    ).sheetIndex;
+    const a = addressPosition(normalizeAddress(range.from));
+    const b = addressPosition(normalizeAddress(range.to));
+    const columns = Math.abs(a.column - b.column) + 1;
+    const rows = Math.abs(a.row - b.row) + 1;
+    if (rows * columns > MAX_RANGE_CELLS) {
+      throw new CompileError(
+        `The range ${range.from}:${range.to} has ${(rows * columns).toLocaleString("en")} cells; ranges are limited to ${MAX_RANGE_CELLS.toLocaleString("en")}`,
+        "#VALUE!",
+      );
+    }
+    const keys = rangeAddresses(range.from, range.to)
+      .flat()
+      .map((address) => cellKey(sheetIndex, address));
+    return { rows, columns, keys };
+  };
+
   // Dependencies, with every reference and lookup resolved to its target cell.
   const lookupTargets = new WeakMap<Expr, string>();
+  const rangeTargets = new WeakMap<Expr, RangeCells>();
   const collectDeps = (expr: Expr, sheetIndex: number, into: Set<string>): void => {
     switch (expr.type) {
       case "ref": {
@@ -330,6 +379,13 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         const key = resolveLookup(expr, sheetIndex);
         lookupTargets.set(expr, key);
         into.add(key);
+        break;
+      }
+      case "range": {
+        const range = resolveRange(expr, sheetIndex);
+        rangeTargets.set(expr, range);
+        // Only cells with contents matter: empty cells have nothing to wait for.
+        for (const key of range.keys) if (inputs.has(key)) into.add(key);
         break;
       }
       case "negate":
@@ -409,6 +465,11 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         return readCell(lookupTargets.get(expr) ?? resolveName(expr.name), sheetIndex);
       case "refError":
         throw new CompileError("A reference moved off the grid when it was copied", "#REF!");
+      case "range":
+        throw new CompileError(
+          "A range like A1:B5 can only be used inside a function such as SUM, AVERAGE or INDEX",
+          "#VALUE!",
+        );
       case "negate":
         return emit({ kind: "unary", fn: "neg", a: emitExpr(expr.operand, sheetIndex) });
       case "binary":
@@ -437,6 +498,88 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
       const expr = args[i];
       if (!expr) throw new CompileError(`${name} is missing argument ${i + 1}`, "#NAME?");
       return emitExpr(expr, sheetIndex);
+    };
+
+    const constant = (value: number): Reg => emit({ kind: "const", value });
+    const un = (fn: UnaryFn, a: Reg): Reg => emit({ kind: "unary", fn, a });
+    const bin = (fn: BinaryFn, a: Reg, b: Reg): Reg => emit({ kind: "binary", fn, a, b });
+    const select = (cond: Reg, then: Reg, otherwise: Reg): Reg =>
+      emit({ kind: "select", cond, then, otherwise });
+    // An error value: NaN, which shows as an error wherever it ends up.
+    let nan: Reg | undefined;
+    const error = (): Reg => {
+      nan ??= constant(Number.NaN);
+      return nan;
+    };
+
+    /** The cells of a range argument; an error if the argument isn't a range. */
+    const rangeArg = (i: number, what = "a range, like A1:B5"): RangeCells => {
+      const expr = args[i];
+      const range = expr?.type === "range" ? rangeTargets.get(expr) : undefined;
+      if (!range) throw new CompileError(`${name}'s argument ${i + 1} must be ${what}`, "#VALUE!");
+      return range;
+    };
+    /** A range cell's number, or null for an empty or text cell, which range functions skip. */
+    const rangeNumber = (key: string): Reg | null =>
+      cells.has(key) ? readCell(key, sheetIndex) : null;
+    /** A range cell's value when picked out (INDEX): 0 if empty, as in Excel; text is an error. */
+    const rangeValue = (key: string): Reg =>
+      labels.has(key) ? error() : readCell(key, sheetIndex);
+    /** Every number among the arguments: scalars, and the numeric cells of ranges. */
+    const numbers = (): Reg[] =>
+      args.flatMap((expr, i) =>
+        expr.type === "range"
+          ? rangeArg(i).keys.flatMap((key) => rangeNumber(key) ?? [])
+          : [arg(i)],
+      );
+    const fold = (fn: BinaryFn, regs: Reg[], empty: number): Reg =>
+      regs.reduce<Reg | undefined>(
+        (acc, reg) => (acc === undefined ? reg : bin(fn, acc, reg)),
+        undefined,
+      ) ?? constant(empty);
+    /** A number written in the formula (such as MATCH's type), or `fallback` if it's omitted. */
+    const constantArg = (i: number, fallback: number): number => {
+      const expr = args[i];
+      if (expr === undefined) return fallback;
+      if (expr.type === "number") return expr.value;
+      if (expr.type === "negate" && expr.operand.type === "number") return -expr.operand.value;
+      throw new CompileError(
+        `${name}'s argument ${i + 1} must be a number, not a formula`,
+        "#VALUE!",
+      );
+    };
+    /** The value at a 1-based position of `list` (truncated, as in Excel), or an error. */
+    const pick = (position: Reg, list: Reg[]): Reg => {
+      const at = un("floor", position);
+      let result = error();
+      for (let i = list.length; i >= 1; i--) {
+        result = select(bin("eq", at, constant(i)), list[i - 1] ?? error(), result);
+      }
+      return result;
+    };
+    /**
+     * Where `x` is in `list` (1-based), as MATCH finds it: type 1, the last value <= x (Excel's
+     * answer for ascending values); type -1, the last value >= x (for descending values); type 0,
+     * the first equal value. Empty and text cells never match. No match is an error (#N/A).
+     */
+    const match = (x: Reg, list: (Reg | null)[], type: number): Reg => {
+      const test: BinaryFn = type > 0 ? "le" : type < 0 ? "ge" : "eq";
+      const positions = [...list.keys()];
+      // The outermost test wins: the last position for approximate types, the first for exact.
+      if (type === 0) positions.reverse();
+      let result = error();
+      for (const i of positions) {
+        const value = list[i];
+        if (value !== null && value !== undefined) {
+          result = select(bin(test, value, x), constant(i + 1), result);
+        }
+      }
+      return result;
+    };
+    const oneDimensional = (range: RangeCells): void => {
+      if (range.rows !== 1 && range.columns !== 1) {
+        throw new CompileError(`${name} needs a single row or column`, "#N/A");
+      }
     };
 
     const unary = UNARY_FUNCTIONS[name];
@@ -474,14 +617,192 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         arity(2);
         return emit({ kind: "binary", fn: "pow", a: arg(0), b: arg(1) });
       case "MIN":
-      case "MAX": {
+      case "MAX":
+        // Empty and text cells in ranges are skipped; with no numbers at all, the answer is 0.
         if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
-        const fn = name === "MIN" ? "min" : "max";
-        let result = arg(0);
-        for (let i = 1; i < args.length; i++) {
-          result = emit({ kind: "binary", fn, a: result, b: arg(i) });
+        return fold(name === "MIN" ? "min" : "max", numbers(), 0);
+      case "SUM":
+        if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
+        return fold("add", numbers(), 0);
+      case "PRODUCT":
+        if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
+        return fold("mul", numbers(), 0);
+      case "COUNT":
+        if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
+        return constant(numbers().length);
+      case "AVERAGE": {
+        if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
+        const list = numbers();
+        if (list.length === 0)
+          throw new CompileError("AVERAGE has no numbers to average", "#DIV/0!");
+        return bin("div", fold("add", list, 0), constant(list.length));
+      }
+      case "SUMPRODUCT": {
+        if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
+        const ranges = args.map((_, i) => rangeArg(i));
+        const [first] = ranges;
+        if (!first || ranges.some((r) => r.rows !== first.rows || r.columns !== first.columns)) {
+          throw new CompileError("SUMPRODUCT's ranges must all be the same shape", "#VALUE!");
         }
-        return result;
+        // Non-numeric cells count as 0.
+        const terms = first.keys.map((_, p) =>
+          fold(
+            "mul",
+            ranges.map((r) => rangeNumber(r.keys[p] ?? "") ?? constant(0)),
+            0,
+          ),
+        );
+        return fold("add", terms, 0);
+      }
+      case "INDEX": {
+        arity(2, 3);
+        const range = rangeArg(0);
+        const values = range.keys.map(rangeValue);
+        if (args.length === 2) {
+          // One index into a single row or column picks along it, as in Excel.
+          if (range.rows !== 1 && range.columns !== 1) {
+            throw new CompileError(
+              "INDEX into several rows and columns needs a row and a column",
+              "#VALUE!",
+            );
+          }
+          return pick(arg(1), values);
+        }
+        const row = un("floor", arg(1));
+        const column = un("floor", arg(2));
+        const inside = fold(
+          "min",
+          [
+            bin("ge", row, constant(1)),
+            bin("le", row, constant(range.rows)),
+            bin("ge", column, constant(1)),
+            bin("le", column, constant(range.columns)),
+          ],
+          0,
+        );
+        const position = bin(
+          "add",
+          bin("mul", bin("sub", row, constant(1)), constant(range.columns)),
+          column,
+        );
+        return select(inside, pick(position, values), error());
+      }
+      case "MATCH": {
+        arity(2, 3);
+        const range = rangeArg(1);
+        oneDimensional(range);
+        return match(arg(0), range.keys.map(rangeNumber), constantArg(2, 1));
+      }
+      case "VLOOKUP":
+      case "HLOOKUP": {
+        arity(3, 4);
+        const table = rangeArg(1, "a table, like A1:C9");
+        const vertical = name === "VLOOKUP";
+        const lines = vertical ? table.rows : table.columns;
+        const across = vertical ? table.columns : table.rows;
+        const at = (line: number, k: number) =>
+          (vertical
+            ? table.keys[line * table.columns + k]
+            : table.keys[k * table.columns + line]) ?? "";
+        const firsts = Array.from({ length: lines }, (_, line) => rangeNumber(at(line, 0)));
+        const found = match(arg(0), firsts, constantArg(3, 1) === 0 ? 0 : 1);
+        const valuesIn = (k: number) =>
+          pick(
+            found,
+            Array.from({ length: lines }, (_, line) => rangeValue(at(line, k))),
+          );
+        const index = args[2];
+        if (index?.type === "number") {
+          const k = Math.floor(index.value);
+          if (k < 1 || k > across) {
+            throw new CompileError(
+              `${name}'s table has no ${vertical ? "column" : "row"} ${k}`,
+              "#REF!",
+            );
+          }
+          return valuesIn(k - 1);
+        }
+        return pick(
+          arg(2),
+          Array.from({ length: across }, (_, k) => valuesIn(k)),
+        );
+      }
+      case "AND":
+      case "OR": {
+        if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
+        const list = numbers();
+        if (list.length === 0) throw new CompileError(`${name} has no values to test`, "#VALUE!");
+        const zeroReg = constant(0);
+        const truths = list.map((reg) => bin("ne", reg, zeroReg));
+        return fold(name === "AND" ? "min" : "max", truths, 0);
+      }
+      case "NOT":
+        arity(1);
+        return bin("eq", arg(0), constant(0));
+      case "IFERROR": {
+        arity(2);
+        let value: Reg;
+        try {
+          value = arg(0);
+        } catch (failure) {
+          // An error in the formula itself, such as a lookup past the end of a table.
+          if (failure instanceof CompileError) return arg(1);
+          throw failure;
+        }
+        return select(un("finite", value), value, arg(1));
+      }
+      case "INT":
+        arity(1);
+        return un("floor", arg(0));
+      case "ROUND":
+      case "ROUNDUP":
+      case "ROUNDDOWN":
+      case "TRUNC": {
+        if (name === "TRUNC") arity(1, 2);
+        else arity(2);
+        // On the magnitude, then signed again: halves round away from zero, as in Excel.
+        const x = arg(0);
+        const scale = args.length > 1 ? bin("pow", constant(10), arg(1)) : constant(1);
+        const magnitude = bin("mul", un("abs", x), scale);
+        const rounded =
+          name === "ROUND"
+            ? un("floor", bin("add", magnitude, constant(0.5)))
+            : name === "ROUNDUP"
+              ? un("neg", un("floor", un("neg", magnitude)))
+              : un("floor", magnitude);
+        const result = bin("div", rounded, scale);
+        return select(bin("lt", x, constant(0)), un("neg", result), result);
+      }
+      case "MOD": {
+        // The remainder takes the divisor's sign, as in Excel.
+        arity(2);
+        const a = arg(0);
+        const b = arg(1);
+        return bin("sub", a, bin("mul", b, un("floor", bin("div", a, b))));
+      }
+      case "RRI": {
+        // The equivalent annual growth rate from pv to fv over n periods.
+        arity(3);
+        const n = arg(0);
+        const growth = bin("div", arg(2), arg(1));
+        return bin("sub", bin("pow", growth, bin("div", constant(1), n)), constant(1));
+      }
+      case "NORM.S.INV":
+      case "NORMSINV":
+        arity(1);
+        return un("norminv", arg(0));
+      case "NORM.INV":
+      case "NORMINV":
+      case "LOGNORM.INV":
+      case "LOGINV": {
+        arity(3);
+        const p = arg(0);
+        const mean = arg(1);
+        const sd = arg(2);
+        const normal = bin("add", mean, bin("mul", sd, un("norminv", p)));
+        const value = name.startsWith("NORM") ? normal : un("exp", normal);
+        // A standard deviation that isn't positive is #NUM! in Excel.
+        return select(bin("gt", sd, constant(0)), value, error());
       }
       case "IF": {
         arity(2, 3);

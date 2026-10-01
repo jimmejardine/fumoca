@@ -10,6 +10,7 @@ import {
   themeLight,
 } from "dockview-react";
 import { createContext, useContext, useState } from "react";
+import type { DependencyMark } from "./dependencyColors";
 import { SCENARIO_ICONS, sheetIcon } from "./icons";
 import { RenameColumnModal } from "./RenameColumnModal";
 import type { WorkbookResults } from "./recalc";
@@ -44,7 +45,7 @@ export interface SheetAreaContextValue {
   onRunScenario: (scenarioId: string) => void;
   onStopScenario: () => void;
   /** The selected cell's dependencies to outline, by sheet id: colour by address. */
-  dependencies: Map<string, Map<string, string>>;
+  dependencies: Map<string, Map<string, DependencyMark>>;
 }
 
 /** Dockview panels are created by dockview, so they read the live workbook from context. */

@@ -18,6 +18,7 @@ import {
   type ScreenRange,
   type SourceCell,
 } from "./copyPaste";
+import { type DependencyMark, SIDES } from "./dependencyColors";
 import { FormulaInput } from "./FormulaInput";
 import { moveReference, pointTarget } from "./pointing";
 import { type CellResult, formatResult } from "./recalc";
@@ -283,7 +284,7 @@ export interface SheetGridProps {
   /** Series sheets: a value column's header was double-clicked (0 = the first value column). */
   onRenameColumn?: (index: number) => void;
   /** Cells to outline as dependencies of the selected cell: colour by address. */
-  dependencies?: Map<string, string> | undefined;
+  dependencies?: Map<string, DependencyMark> | undefined;
 }
 
 /** One worksheet's grid. Cells show calculated answers; root cells are bold (SPECS.md §6.5). */
@@ -302,15 +303,24 @@ export function SheetGrid({
   const [filtered, setFiltered] = useState(false);
 
   // Dependency borders (SPECS.md §6.5): each cell the selected cell's formula references gets an
-  // outline in its colour, the same colour as its name in the formula. A style rule per cell,
-  // matched by address, so moving the selection doesn't re-render the grid's rows.
+  // outline in its colour, the same colour as its name in the formula, and a range one outline
+  // around it all. A style rule per cell, matched by address, so moving the selection doesn't
+  // re-render the grid's rows. The border is an overlay, so it leaves the grid lines (the cell's
+  // own box shadow) alone, and draws just the sides on the outline.
   const dependencyStyles = useMemo(() => {
     const scope = `[data-sheet="${CSS.escape(sheet.id)}"]`;
+    const width = (sides: number, side: number) => (sides & side ? "2px" : "0");
     return [...(dependencies ?? [])]
-      .map(
-        ([address, color]) =>
-          `${scope} .rgCell[data-address="${address}"] { outline: 2px solid ${color}; outline-offset: -2px; }`,
-      )
+      .map(([address, { color, sides }]) => {
+        const widths = [SIDES.top, SIDES.right, SIDES.bottom, SIDES.left]
+          .map((side) => width(sides, side))
+          .join(" ");
+        // Grid cells are absolutely positioned, so the overlay sits on its cell.
+        return (
+          `${scope} .rgCell[data-address="${address}"]::after { content: ""; position: absolute; ` +
+          `inset: 0; pointer-events: none; border: solid ${color}; border-width: ${widths}; }`
+        );
+      })
       .join("\n");
   }, [dependencies, sheet.id]);
 

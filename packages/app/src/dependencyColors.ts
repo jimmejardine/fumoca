@@ -1,4 +1,9 @@
-import { type FormulaReference, formulaNames, formulaReferences } from "@fumoca/engine";
+import {
+  type FormulaReference,
+  formulaNames,
+  formulaReferences,
+  rangeAddresses,
+} from "@fumoca/engine";
 import { findName, type Workbook } from "@fumoca/storage";
 
 /**
@@ -24,9 +29,24 @@ export function dependencyColor(i: number, scheme: ColorScheme): string {
   return scheme === "dark" ? `hsl(${hue} 80% 65%)` : `hsl(${hue} 75% 42%)`;
 }
 
-/** Identifies the cell a reference names: `B3`, or `inputs!B3` on another sheet (any case). */
-export const referenceKey = ({ sheet, address }: Pick<FormulaReference, "sheet" | "address">) =>
-  sheet === undefined ? address : `${sheet.toLowerCase()}!${address}`;
+/**
+ * Identifies the cell a reference names: `B3`, or `inputs!B3` on another sheet (any case). Both
+ * corners of a range share the range's key, `B3:C9`, so they share a colour.
+ */
+export const referenceKey = ({
+  sheet,
+  address,
+  rangeTo,
+  rangeFrom,
+}: Pick<FormulaReference, "sheet" | "address" | "rangeTo" | "rangeFrom">) => {
+  const cells =
+    rangeTo !== undefined
+      ? `${address}:${rangeTo}`
+      : rangeFrom !== undefined
+        ? `${rangeFrom}:${address}`
+        : address;
+  return sheet === undefined ? cells : `${sheet.toLowerCase()}!${cells}`;
+};
 
 /** Identifies a named cell used in a formula (any case). */
 export const nameKey = (name: string) => `name:${name.toLowerCase()}`;
@@ -63,38 +83,76 @@ export function referenceColors(text: string, scheme: ColorScheme): Map<string, 
   return colors;
 }
 
+/** Which sides of a cell a dependency border draws, as bits: a range is outlined as a whole. */
+export const SIDES = { top: 1, right: 2, bottom: 4, left: 8, all: 15 } as const;
+
+/** A dependency border on one cell: its colour, and which of its sides to draw (`SIDES`). */
+export interface DependencyMark {
+  color: string;
+  sides: number;
+}
+
+/** The cells of a range, each with the sides that lie on the range's outline. */
+function rangeOutline(from: string, to: string): [string, number][] {
+  const rows = rangeAddresses(from, to);
+  return rows.flatMap((line, r) =>
+    line.map((address, c): [string, number] => [
+      address,
+      (r === 0 ? SIDES.top : 0) |
+        (c === line.length - 1 ? SIDES.right : 0) |
+        (r === rows.length - 1 ? SIDES.bottom : 0) |
+        (c === 0 ? SIDES.left : 0),
+    ]),
+  );
+}
+
 /**
  * The dependency borders to draw for a formula on a sheet (the selected cell's, or one being
- * typed): for each sheet, by id, the colour of each of its cells that the formula references.
- * References to other sheets are included, so their borders show wherever those sheets are open.
- * The first colour for a cell wins.
+ * typed): for each sheet, by id, the border of each of its cells that the formula references. A
+ * range is outlined as one rectangle. References to other sheets are included, so their borders
+ * show wherever those sheets are open. The first border for a cell wins.
  */
 export function dependencyHighlights(
   workbook: Workbook,
   sheetId: string,
   text: number | string | undefined,
   scheme: ColorScheme,
-): Map<string, Map<string, string>> {
-  const highlights = new Map<string, Map<string, string>>();
+): Map<string, Map<string, DependencyMark>> {
+  const highlights = new Map<string, Map<string, DependencyMark>>();
   if (typeof text !== "string") return highlights;
   const colors = referenceColors(text, scheme);
   for (const span of formulaSpans(text)) {
-    let cell: { sheetId: string; address: string } | null = null;
+    const color = colors.get(span.key);
+    if (!color) continue;
+    let target: { sheetId: string; cells: [string, number][] } | null = null;
     if ("name" in span) {
-      cell = findName(workbook, span.name);
+      const cell = findName(workbook, span.name);
+      target = cell && { sheetId: cell.sheetId, cells: [[cell.address, SIDES.all]] };
     } else {
-      const sheet = span.reference.sheet?.toLowerCase();
-      const target =
+      const { reference } = span;
+      // A range's second corner is outlined with its first.
+      if (reference.rangeFrom !== undefined) continue;
+      const sheet = reference.sheet?.toLowerCase();
+      const id =
         sheet === undefined
           ? sheetId
           : workbook.sheets.find((s) => s.name.toLowerCase() === sheet)?.id;
-      cell = target ? { sheetId: target, address: span.reference.address } : null;
+      target = id
+        ? {
+            sheetId: id,
+            cells:
+              reference.rangeTo === undefined
+                ? [[reference.address, SIDES.all]]
+                : rangeOutline(reference.address, reference.rangeTo),
+          }
+        : null;
     }
-    const color = colors.get(span.key);
-    if (!cell || !color) continue;
-    const cells = highlights.get(cell.sheetId) ?? new Map<string, string>();
-    if (!cells.has(cell.address)) cells.set(cell.address, color);
-    highlights.set(cell.sheetId, cells);
+    if (!target) continue;
+    const marks = highlights.get(target.sheetId) ?? new Map<string, DependencyMark>();
+    for (const [address, sides] of target.cells) {
+      if (!marks.has(address)) marks.set(address, { color, sides });
+    }
+    highlights.set(target.sheetId, marks);
   }
   return highlights;
 }
