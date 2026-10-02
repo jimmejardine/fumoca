@@ -165,3 +165,110 @@ export function nextPeriod(period: string): string | null {
     }
   }
 }
+
+/*
+ * Periods as values (SPECS.md §3.1). In calculations a period is a whole number counting periods
+ * of its granularity, and its granularity is known when the formula is compiled:
+ * - year: the year (2027);
+ * - quarter: year × 4 + quarter − 1;
+ * - month: year × 12 + month − 1;
+ * - day: Excel's serial number (days since 1899-12-30, so Excel's date functions agree from
+ *   March 1900 on);
+ * - hour: serial × 24 + hour;
+ * - week: ISO weeks since the one starting Monday 1900-01-01 (serial 2).
+ * These stay small enough to be exact in single precision (the GPU), and `period + n` is plain
+ * addition.
+ */
+
+/** Days from 1970-01-01 to a proleptic Gregorian date (H. Hinnant's days_from_civil). */
+export function daysFromCivil(year: number, month: number, day: number): number {
+  const y = month <= 2 ? year - 1 : year;
+  const era = Math.floor(y / 400);
+  const yoe = y - era * 400;
+  const doy = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+
+/** The date `days` after 1970-01-01, as [year, month, day] (H. Hinnant's civil_from_days). */
+export function civilFromDays(days: number): [number, number, number] {
+  const z = days + 719468;
+  const era = Math.floor(z / 146097);
+  const doe = z - era * 146097;
+  const yoe = Math.floor(
+    (doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365,
+  );
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);
+  const day = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const month = mp < 10 ? mp + 3 : mp - 9;
+  return [yoe + era * 400 + (month <= 2 ? 1 : 0), month, day];
+}
+
+/** Excel's serial number of 1970-01-01. */
+export const UNIX_EPOCH_SERIAL = 25569;
+/** The serial of Monday 1900-01-01, where week 0 starts. */
+export const FIRST_MONDAY_SERIAL = 2;
+
+/** The serial number of a date. */
+export const serialOf = (year: number, month: number, day: number) =>
+  daysFromCivil(year, month, day) + UNIX_EPOCH_SERIAL;
+
+/** The serial of the Monday starting ISO week 1 of `year`: the week with 4 January in it. */
+function isoWeekOneSerial(year: number): number {
+  const jan4 = serialOf(year, 1, 4);
+  return jan4 - ((jan4 - FIRST_MONDAY_SERIAL) % 7);
+}
+
+/** A period's value in calculations, with its granularity, or null if the text isn't a period. */
+export function periodValue(text: string): { granularity: Granularity; index: number } | null {
+  const normalized = normalizePeriod(text);
+  const granularity = granularityOf(normalized);
+  if (!granularity) return null;
+  const [y = 0, a = 0, b = 0, c = 0] = (normalized.match(/\d+/g) ?? []).map(Number);
+  switch (granularity) {
+    case "year":
+      return { granularity, index: y };
+    case "quarter":
+      return { granularity, index: y * 4 + a - 1 };
+    case "month":
+      return { granularity, index: y * 12 + a - 1 };
+    case "week":
+      return {
+        granularity,
+        index: (isoWeekOneSerial(y) + (a - 1) * 7 - FIRST_MONDAY_SERIAL) / 7,
+      };
+    case "day":
+      return { granularity, index: serialOf(y, a, b) };
+    case "hour":
+      return { granularity, index: serialOf(y, a, b) * 24 + c };
+  }
+}
+
+/** Writes a period's value as its literal: (24315, month) → `2026-04`. */
+export function formatPeriod(index: number, granularity: Granularity): string {
+  const i = Math.round(index);
+  const date = (serial: number) => {
+    const [y, m, d] = civilFromDays(serial - UNIX_EPOCH_SERIAL);
+    return `${y}-${pad2(String(m))}-${pad2(String(d))}`;
+  };
+  switch (granularity) {
+    case "year":
+      return String(i);
+    case "quarter":
+      return `${Math.floor(i / 4)}-Q${(((i % 4) + 4) % 4) + 1}`;
+    case "month":
+      return `${Math.floor(i / 12)}-${pad2(String((((i % 12) + 12) % 12) + 1))}`;
+    case "week": {
+      // The ISO year is the year of the week's Thursday.
+      const monday = i * 7 + FIRST_MONDAY_SERIAL;
+      const [year] = civilFromDays(monday + 3 - UNIX_EPOCH_SERIAL);
+      const week = (monday - isoWeekOneSerial(year)) / 7 + 1;
+      return `${year}-W${pad2(String(week))}`;
+    }
+    case "day":
+      return date(i);
+    case "hour":
+      return `${date(Math.floor(i / 24))}T${pad2(String(((i % 24) + 24) % 24))}`;
+  }
+}

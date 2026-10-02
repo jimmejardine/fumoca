@@ -20,8 +20,12 @@ import { ARK_SHEETS } from "./arkTesla.generated";
 export function createTeslaWorkbook(): Workbook {
   const sheets: Sheet[] = [
     createSheet("About", ABOUT),
-    ...ARK_SHEETS.map(({ name, cells, names }) => {
-      const sheet = createSheet(name, { ...cells });
+    ...ARK_SHEETS.map(({ name, cells, names, series }) => {
+      const sheet = createSheet(
+        name,
+        { ...cells },
+        series && { ...series, columns: [...series.columns] },
+      );
       return Object.keys(names).length > 0 ? { ...sheet, names: { ...names } } : sheet;
     }),
   ];
@@ -37,6 +41,7 @@ const ABOUT: Record<string, string> = {
   A8: "Inputs: each is normally distributed, clamped to its minimum and maximum. Edit the",
   A9: "ranges, or the Draw formulas, and every result updates.",
   A10: "EV, Capital, Insurance, Ride-hail, Storage, Optimus: the business lines, by year.",
+  A13: "Actuals: the reported history (2019–2024), a yearly series the model looks up.",
   A11: "Valuation: consolidated results, enterprise value, and the 2029 share price.",
   A12: "Price tables: vehicle prices by volume, ride-hail prices by miles, robotaxi adoption.",
   A14: "Scenarios and Sensitivities, in the side panel, vary the key drivers.",
@@ -64,11 +69,11 @@ function createTeslaScenarios(sheets: Sheet[]): Scenario[] {
     {
       ...createScenario("Robotaxi timing × production"),
       dimensions: [
-        // The launch is drawn as years after 2025 (see the Inputs sheet).
-        createCellDimension(cell("RobotaxiLaunchDelay"), [
-          ["2026", 1],
-          ["2028", 3],
-          ["2030", 5],
+        // The launch is a month (see the Inputs sheet).
+        createCellDimension(cell("RobotaxiLaunch"), [
+          ["2026", "2026-01"],
+          ["2028", "2028-01"],
+          ["2030", "2030-01"],
         ]),
         createCellDimension(cell("MaxProductionIncrease"), [
           ["Slow", 0.2],

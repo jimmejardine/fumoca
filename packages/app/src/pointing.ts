@@ -1,4 +1,4 @@
-import { formatReference, formulaReferences } from "@fumoca/engine";
+import { addressPosition, columnLetters, formatReference, formulaReferences } from "@fumoca/engine";
 
 /**
  * Point mode (SPECS.md §6.1): while a formula is being edited, clicking a cell inserts its address
@@ -54,11 +54,11 @@ export function moveReference(
   bounds: { columns: number; rows: number },
 ): string | null {
   const [parsed] = formulaReferences(`=${reference}`);
-  const match = parsed && /^([A-Z])([0-9]+)$/.exec(parsed.address);
-  if (!parsed || !match?.[1] || !match[2]) return null;
-  const x = Math.min(Math.max(match[1].charCodeAt(0) - 65 + dx, 0), bounds.columns - 1);
-  const y = Math.min(Math.max(Number(match[2]) - 1 + dy, 0), bounds.rows - 1);
-  const address = `${String.fromCharCode(65 + x)}${y + 1}`;
+  if (!parsed) return null;
+  const { column, row } = addressPosition(parsed.address);
+  const x = Math.min(Math.max(column - 1 + dx, 0), bounds.columns - 1);
+  const y = Math.min(Math.max(row - 1 + dy, 0), bounds.rows - 1);
+  const address = `${columnLetters(x + 1)}${y + 1}`;
   return parsed.sheet === undefined ? address : formatReference(parsed.sheet, address);
 }
 

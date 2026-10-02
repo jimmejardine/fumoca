@@ -1,4 +1,4 @@
-import { formatReference, granularityOf } from "@fumoca/engine";
+import { columnLetters, formatReference, granularityOf } from "@fumoca/engine";
 import { cellName, lastUsedRow, PERIOD_COLUMN, type Sheet, suggestPeriod } from "@fumoca/storage";
 import { useComputedColorScheme } from "@mantine/core";
 import {
@@ -26,7 +26,11 @@ import classes from "./SheetGrid.module.css";
 
 const COLUMN_COUNT = 26;
 const ROW_COUNT = 200;
-const COLUMN_LETTERS = Array.from({ length: COLUMN_COUNT }, (_, i) => String.fromCharCode(65 + i));
+/**
+ * Column letters by position: A–Z on ordinary sheets, and on as far as ZZ for series sheets with
+ * many value columns.
+ */
+const COLUMN_LETTERS = Array.from({ length: 26 * 27 }, (_, i) => columnLetters(i + 1));
 
 /**
  * Each grid row holds, per column letter, the text the cell shows (the answer), plus hidden
@@ -144,7 +148,7 @@ const column = (letter: string, name: string, size = 120) => ({
 });
 
 /** Standard sheets: columns A–Z. */
-const COLUMNS = COLUMN_LETTERS.map((letter) => column(letter, letter));
+const COLUMNS = COLUMN_LETTERS.slice(0, COLUMN_COUNT).map((letter) => column(letter, letter));
 
 /**
  * The in-grid editor (F2, double-click, or typing). It edits the cell's raw input, the formula or

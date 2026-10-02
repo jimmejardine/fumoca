@@ -1,4 +1,4 @@
-import { type CellInputs, compile, type RunOptions } from "@fumoca/engine";
+import { type CellInputs, compile, compileWorkbook, type RunOptions } from "@fumoca/engine";
 import { CpuBackend } from "@fumoca/sim";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GpuBackend } from "./run";
@@ -135,6 +135,9 @@ describe("CPU and GPU backends", () => {
       A5: "=INT(A2 / 7) + ROUND(A3, 2) + MOD(A2, 7) + RRI(5, 100, A2) + AND(A1, A2) + OR(0, A1)",
       A6: "=MATCH(A2, C1:C3) + INDEX(C1:D3, 2, 2) + VLOOKUP(A2, C1:D3, 2) + SUMPRODUCT(C1:C3, D1:D3)",
       A7: "=IFERROR(LN(-A1), 3) + IFERROR(INDEX(C1:C3, 4), 5) + NORM.S.INV(0.975)",
+      // Calendar arithmetic on periods (SPECS.md §3.1): month, day and week conversions.
+      A8: "=(PERIOD.END(2027-Q2) - PERIOD.START(2026-01)) + YEAR(2027-08-15) + MONTH(2026-W10)",
+      A9: "=DAY(DATE(2028, 2, 29) + 1) + WEEKDAY(2031-12-31) + (PERIOD.MONTH(2030-12-31) - 2025-01)",
       C1: 0,
       C2: 1000,
       C3: 2000,
@@ -155,6 +158,48 @@ describe("CPU and GPU backends", () => {
         expect(value).toBe(values[0]);
         expect(relativeError(expected, value)).toBeLessThan(1e-6);
       }
+    }
+  });
+
+  it("agree on series lookups at calculated times, across granularities", async () => {
+    const program = compileWorkbook([
+      {
+        name: "S",
+        series: { granularity: "month", columns: ["Flow", "Level"], type: "flow" },
+        cells: {
+          A1: "2026-01",
+          B1: 310,
+          C1: 100,
+          A2: "2026-02",
+          B2: "=NORMAL(280, 10)",
+          C2: 120,
+          A3: "2026-03",
+          B3: 300,
+          C3: 90,
+        },
+      },
+      {
+        name: "M",
+        cells: {
+          // An uncertain month, and lookups at it, at a day inside it, and at its quarter.
+          A1: "=2026-01 + INT(UNIFORM(0, 3))",
+          A2: "=S[Flow]@A1 + S[Level]@A1",
+          A3: "=S[Flow]@(PERIOD.DAY(A1) + 9)",
+          A4: "=S[Flow]@PERIOD.QUARTER(A1) + SUM(S[Level]@2026-01:2026-03)",
+        },
+      },
+    ]).program;
+    const options = { seed: 3, iterationStart: 0, count: 8192, outputs: ["1!A2", "1!A3", "1!A4"] };
+    const cpuSamples = await cpu.run(program, options);
+    const gpuSamples = await gpu.run(program, options);
+    for (const cell of options.outputs) {
+      const c = cpuSamples.get(cell) ?? new Float64Array();
+      const g = gpuSamples.get(cell) ?? new Float32Array();
+      let mismatches = 0;
+      for (let i = 0; i < options.count; i++) {
+        if (!(relativeError(c[i] ?? Number.NaN, g[i] ?? Number.NaN) <= 1e-5)) mismatches++;
+      }
+      expect(mismatches, cell).toBe(0);
     }
   });
 

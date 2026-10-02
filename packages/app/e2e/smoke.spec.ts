@@ -232,6 +232,19 @@ test("cells show calculated answers, with root cells in bold", async ({ page }) 
   await expect(cell(page, 3, 1)).toHaveText("2334.125");
 });
 
+test("periods are values: typed, calculated with, and shown as periods", async ({ page }) => {
+  await editCell(page, 0, 0, "2027-q1"); // A1: a quarter
+  await editCell(page, 0, 1, "=A1 + 2"); // B1
+  await editCell(page, 0, 2, "=PERIOD.MONTH(B1) - 2026-12"); // C1: months since Dec 2026
+  await editCell(page, 0, 3, "=A1 * 2"); // D1: not allowed
+  await editCell(page, 0, 4, "=2027 - 1"); // E1: with spaces, subtraction
+  await expect(cell(page, 0, 0)).toHaveText("2027-Q1");
+  await expect(cell(page, 0, 1)).toHaveText("2027-Q3");
+  await expect(cell(page, 0, 2)).toHaveText("7");
+  await expect(cell(page, 0, 3)).toHaveText("#VALUE!");
+  await expect(cell(page, 0, 4)).toHaveText("2026");
+});
+
 test("the formula bar shows and edits the selected cell", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await tabs(page).filter({ hasText: "Deterministic" }).click();

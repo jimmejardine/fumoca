@@ -21,7 +21,7 @@ export function outputRegisters(program: Program, outputs: string[]): number[] {
   });
 }
 
-function unary(fn: UnaryFn, a: number): number {
+export function unary(fn: UnaryFn, a: number): number {
   switch (fn) {
     case "neg":
       return -a;
@@ -46,7 +46,7 @@ function unary(fn: UnaryFn, a: number): number {
   }
 }
 
-function binary(fn: BinaryFn, a: number, b: number): number {
+export function binary(fn: BinaryFn, a: number, b: number): number {
   switch (fn) {
     case "add":
       return a + b;

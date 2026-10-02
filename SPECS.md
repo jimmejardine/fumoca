@@ -136,6 +136,39 @@ Every date value in fumoca is **tagged with a granularity** at all times. A date
   - Fractional *n* is truncated towards zero **(proposed)**.
 - **Comparison (proposed):** dates compare by their start serial. `=` between different granularities is true only if both the start serial and the granularity match.
 
+#### 3.1.1 Current implementation
+
+- **Periods in formulas:** a period written without spaces is a period, not a subtraction.
+  - `2027-01` (or `2027-1`) is January 2027, `2027-Q1` a quarter, `2027-W05` a week, `2027-01-15` a day and `2027-01-15T09` an hour.
+  - `2027 - 1`, with spaces, is the number 2026, and so is anything that isn't a valid period, such as `2027-13`.
+  - A period wins over a cell name: `2027-Q1` is the quarter, not 2027 minus cell Q1.
+  - **Excel compatibility:** a formula like `=2020-12` means December 2020 in fumoca, but 2008 in Excel.
+- **Periods in cells:** typing `2027-Q1` or `2027-3` into a cell makes a period. A year alone stays a number, and `PERIOD.YEAR(2027)` makes a year period.
+- **How periods are stored:** as a whole number counting periods of their granularity:
+  - years: the year;
+  - quarters: year × 4 + quarter − 1;
+  - months: year × 12 + month − 1;
+  - days: Excel's serial number;
+  - hours: serial × 24 + hour;
+  - weeks: ISO weeks since 1900-01-01.
+
+  The compiler knows every value's granularity. The values stay small enough to be exact on the GPU, and `period + n` is plain addition.
+- **Types are checked when compiling,** and broken rules give `#VALUE!` with a reason. The rules:
+  - a period ± a number is a period;
+  - a period − a period of the same granularity is a count;
+  - periods of one granularity compare;
+  - `MIN`, `MAX`, `IF`, `IFERROR`, `INDEX`, `MATCH` and `VLOOKUP` carry periods through.
+
+  Anything else is an error: mixing granularities, multiplying a period, adding two periods, or passing a period to a function that takes numbers.
+- **Functions:**
+  - **Conversions:** `PERIOD.YEAR`/`QUARTER`/`MONTH`/`WEEK`/`DAY`/`HOUR(p)` convert to the containing period, or the first sub-period. A week belongs to the month of its Monday.
+  - **Building periods from numbers:** `PERIOD.YEAR(y)`, `PERIOD.QUARTER(y, q)`, `PERIOD.MONTH(y, m)`, `PERIOD.DAY(y, m, d)` and `DATE(y, m, d)` carry over parts that are out of range, as Excel does.
+  - **First and last day:** `PERIOD.START`/`PERIOD.END`.
+  - **Parts as numbers:** `YEAR`, `QUARTER`, `MONTH`, `DAY`, `WEEKDAY` (Sunday = 1) and `HOUR`. A plain number counts as an Excel serial date.
+  - **Calendar arithmetic** is compiled into ordinary operations, so an uncertain period works too, such as a launch month drawn from a distribution.
+- **Display:** a period cell shows as its period. An uncertain one shows its mean period ± its spread in periods.
+- **Not yet:** `GRANULARITY` (text values don't exist yet), `EDATE`, `EOMONTH`, `TODAY`, and date number formats.
+
 ---
 
 ## 4. Formulas
@@ -347,14 +380,24 @@ Sheet[Series]@When
 **Granularity of values from cells.** When the `@` part comes from a cell or an expression, the lookup uses the **granularity tag of the date** (§3.1). For example, if `A1` holds `2027-02-15` (a day), then `Rates[Rate]@A1` is a daily lookup and `Rates[Rate]@PERIOD.QUARTER(A1)` is a quarterly lookup. The lookup mapping config (§5.4) then decides how the lookup is resolved against the worksheet's frequency.
 
 **Current implementation:**
-- **Supported forms:** `Sheet[Column]@Period`, and `Sheet@Period` for the first value column.
-  - The period is a literal, or a cell on the same sheet holding a period.
-  - Sheet and column names are matched ignoring case.
-- **Compiling:** the whole workbook compiles into one program. Each lookup resolves at compile time to the single series cell it names, so it compiles to an ordinary cross-sheet reference, and uncertain series values carry their uncertainty through.
+- **Supported forms:** `Sheet[Column]@When`, and `Sheet@When` for the first value column.
+  - **The time** is any period:
+    - a literal (`@2027-01`, `@2027` for a year);
+    - a cell (`@B$1`);
+    - a named cell (`@Launch`);
+    - a function (`@PERIOD.MONTH(2027, 6)`);
+    - an expression in brackets (`@(Launch + 6)`).
+  - **Yearly sheets** also accept a plain number as a year.
+  - **Names:** sheet and column names are matched ignoring case.
+- **Ranges of periods:** `Sales[Units]@2027-01:2027-12` works inside `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `COUNT`, `AND` and `OR`. Each period is looked up, with the mapping below.
+- **Compiling:**
+  - **A time fixed when compiling** reads its row directly.
+  - **A calculated time,** including an uncertain one, becomes a selection among the sheet's rows that runs on every backend.
+  - **Uncertain series values** carry their uncertainty through.
 - **Errors:**
-  - `#N/A` when the period isn't in the time column, the value cell is empty, or the period has a different granularity from the sheet. The lookup mapping (§5.4) comes later.
+  - `#N/A` when a fixed time is outside the sheet's periods. A calculated time outside them is an error value (`#NUM!`).
   - `#REF!` for an unknown sheet or column, or a sheet that isn't a series sheet.
-  - `#VALUE!` when the time cell doesn't hold a period. Calculated times aren't supported yet.
+  - `#VALUE!` when the time isn't a period, or a range of periods is used outside a function.
 
 **Autocomplete.** The formula editor suggests sheet names, series names and period literals as the user types a structured reference.
 
@@ -412,6 +455,14 @@ A setting is resolved in this order, from most specific to least specific:
 2. The per-series override
 3. The **series-type default** (§5.5)
 4. The worksheet default
+
+#### Current implementation
+
+- **Defaults only:** lookups map between granularities with the series type's defaults (§5.5). Flows sum and spread, levels take the end and interpolate linearly, rates average and hold.
+  - **Coarser lookups** combine the rows in their window, so a partly filled window combines the rows it has.
+  - **Linear interpolation** treats each row's value as being at the start of its period, and holds after the last row.
+- **Empty entries:** flows read 0, levels carry the last value forward, and rates are an error.
+- **Not yet:** per-series and per-reference overrides, extrapolating outside the axis, `min`/`max`/`expaverage`, and `previous`/`next`.
 
 #### Future directions
 
@@ -1193,15 +1244,23 @@ fumoca's purpose is to make Monte Carlo valuation models like [ARK Invest's Tesl
   - **One sheet per business line:** ARK's single-simulation sheet is split into EV, Capital, Insurance, Ride-hail, Storage, Optimus and Valuation, keeping ARK's rows, with years across.
   - **Inputs:** each is a named cell (`AutonomousEbitdaMargin`, …) holding a clamped normal, `=IF(Up=Down, Up, MAX(Min, MIN(Max, NORMAL(mean, sd))))`. Formulas refer to inputs by name.
   - **Correlation:** ARK's copula, between the launch year and the production constraint, becomes two visible standard-normal cells (§6.2.1).
-  - **Launch year:** the robotaxi launch is drawn as years after 2025 (`RobotaxiLaunchDelay`), and ARK's formulas on the launch year are rewritten in terms of it. The arithmetic is the same, but in single precision (the GPU) a year near 2026 can only be resolved to about 1/8,000 of a year. That is too coarse for ARK's adoption curve, which steps on the fraction of the launch year.
+  - **Launch:** the robotaxi launch is a month (`RobotaxiLaunch`, a period, §3.1.1), drawn from ARK's distribution of years and counted in whole months from January 2025. It replaces ARK's fractional year (2026.44).
+    - ARK's formulas on the launch year read `LaunchYear = YEAR(RobotaxiLaunch)` and `LaunchFraction = (MONTH(RobotaxiLaunch) − 1)/12` instead of `INT(year)` and `year − INT(year)`.
+    - This keeps the arithmetic on small numbers. In single precision (the GPU), a year near 2026 can only be resolved to about 1/8,000 of a year, which is too coarse for ARK's adoption curve, since it steps on the fraction of the launch year.
+  - **History:** ARK's hard-coded history (2019–2024) is on **Actuals**, a yearly series sheet with one named column per line: cars sold, EV revenue, SG&A, PP&E, shares, stock price, and so on.
+    - The model looks it up: `=Actuals[Cars sold]@B$1`, where row 1 holds the years, and a yearly sheet accepts a plain number as a year.
+    - ARK's source arithmetic, such as `(27236-1580)*10^6`, stays as the series cell's formula.
   - **Text cells:** references to text cells become 0. ARK reaches them only in `IF` branches that are never taken.
   - **Text functions:** `NUMBERVALUE(LEFT(year, 4))` becomes `INT(year)`.
 - **Checked against ARK** (`teslaModel.test.ts`):
-  - **Exactness:** fed the draws from ARK's saved run, the model reproduces every one of that run's 1,127 values to 1e-9, a 2029 share price of $2,309.46.
+  - **Exactness:** fed the draws from ARK's saved run, the model reproduces every one of that run's 1,127 values to 1e-9, a 2029 share price of $2,309.46. The launch is fed as ARK's year (2026) and fraction (0.44), which a whole month can't express.
   - **Monte Carlo:** 20,000 iterations match ARK's 5,000-run summary (mean $2,617, quartiles $2,020 / $3,149) within 5%.
 - **CPU and GPU:**
   - **Agreement:** the two engines agree on the model apart from a handful of cells, where ARK subtracts large, nearly equal amounts (EBIT, and storage EBIT near zero). There, f32 loses relative accuracy in a few iterations out of 10,000, and the cross-check flags those cells (§6.7).
-  - **Engine fix:** this model also showed that `ROUND` must use an exact power of ten for written digits. The GPU's `pow` isn't exact even for whole-number powers.
+  - **Engine fixes:** this model showed that the GPU's `pow` isn't exact even for whole-number powers. So:
+    - operations on constants are now worked out when compiling, with the CPU's arithmetic, so `10^6` is exactly 1,000,000;
+    - the GPU raises to whole powers up to 64 by repeated squaring;
+    - `ROUND` uses an exact power of ten for written digits.
 
 ## 10. Performance targets (proposed)
 

@@ -23,7 +23,7 @@ describe("test model", () => {
     const errors = workbook.sheets.flatMap((sheet, i) =>
       [...(sheets[i]?.errors ?? [])].map(([address, e]) => `${sheet.name}!${address} ${e.code}`),
     );
-    expect(errors.sort()).toEqual(["Lookups!B8 #N/A", "Lookups!B9 #N/A"]);
+    expect(errors.sort()).toEqual(["Lookups!B8 #N/A"]);
   });
 
   it("looks up values from the Prices series sheet", async () => {
@@ -50,6 +50,13 @@ describe("test model", () => {
     const uncertain = lookups ? results.get(lookups.id)?.get("B7") : undefined;
     expect(uncertain).toMatchObject({ kind: "uncertain" });
     if (uncertain?.kind === "uncertain") expect(uncertain.mean).toBeCloseTo(210, 0);
+    // Between granularities, at calculated times, and over a range of periods.
+    expect(value("B9")).toBe(103.2);
+    const calculated = lookups ? results.get(lookups.id)?.get("B10") : undefined;
+    expect(calculated).toMatchObject({ kind: "uncertain" });
+    if (calculated?.kind === "uncertain") expect(calculated.mean).toBeCloseTo(105, 0);
+    expect(value("B11")).toBeCloseTo(103.2 + (15 / 31) * 0.8, 10);
+    expect(value("B12")).toBeCloseTo((101.5 + 99.8 + 103.2) / 3, 10);
   });
 
   it("survives a save and load", () => {

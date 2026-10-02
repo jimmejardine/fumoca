@@ -97,6 +97,20 @@ fn fm_triangular(seed: u32, iteration: u32, stream: u32, lo: f32, mode: f32, hi:
 // WGSL's pow is undefined for x <= 0. Match Excel (and the CPU) for negative bases with
 // integer exponents, and for zero bases.
 fn fm_pow(x: f32, y: f32) -> f32 {
+  // Whole powers by repeated squaring: exact where the result is (10^6, 0.5^3), unlike pow, which
+  // goes through exp and log. A negative base works too, and 0 to a negative power is infinite.
+  if (y == floor(y) && abs(y) <= 64.0) {
+    var n = u32(abs(y));
+    var base = x;
+    var result = 1.0;
+    loop {
+      if (n == 0u) { break; }
+      if ((n & 1u) == 1u) { result = result * base; }
+      base = base * base;
+      n = n >> 1u;
+    }
+    return select(result, 1.0 / result, y < 0.0);
+  }
   if (x == 0.0) {
     if (y > 0.0) { return 0.0; }
     if (y == 0.0) { return 1.0; }

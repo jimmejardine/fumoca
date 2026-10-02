@@ -2,6 +2,8 @@ import {
   type Backend,
   type CellAccumulator,
   compileWorkbook,
+  formatPeriod,
+  type Granularity,
   type SheetInput,
   splitCellKey,
   uncertainCells,
@@ -11,11 +13,13 @@ import type { Workbook } from "@fumoca/storage";
 
 /** The calculated result of one cell, as the grid shows it (SPECS.md §6.5). */
 export type CellResult =
-  | { kind: "number"; value: number; root: boolean }
+  | { kind: "number"; value: number; root: boolean; period?: Granularity }
   | {
       kind: "uncertain";
       mean: number;
       sd: number;
+      /** Set when the cell holds a period (SPECS.md §3.1): its values are period indexes. */
+      period?: Granularity;
       /** Bar heights (the tallest is 1) over the histogram's display window. */
       histogram: number[];
       /** The fractions of samples beyond the window on each side (SPECS.md §6.5). */
@@ -88,6 +92,7 @@ function summarize(
   uncertain: boolean,
   root: boolean,
   f32: boolean,
+  period: Granularity | undefined,
 ): CellResult {
   if (acc.hasNaN) {
     return { kind: "error", code: "#NUM!", message: "The result is not a number", root };
@@ -99,7 +104,7 @@ function summarize(
     // An f32 result (from the GPU) is only good to ~7 significant digits: 103.2 comes back as
     // 103.1999969. Round it, so exact values show exactly.
     const value = f32 ? Number(acc.first.toPrecision(F32_DIGITS)) : acc.first;
-    return { kind: "number", value, root };
+    return period ? { kind: "number", value, root, period } : { kind: "number", value, root };
   }
   return {
     kind: "uncertain",
@@ -107,6 +112,7 @@ function summarize(
     sd: acc.sd,
     ...histogramOf(acc),
     root,
+    ...(period ? { period } : {}),
   };
 }
 
@@ -124,7 +130,9 @@ export function sheetInputs(workbook: Pick<Workbook, "sheets">): SheetInput[] {
   return workbook.sheets.map(({ name, cells, series, names }) => ({
     name,
     cells,
-    ...(series ? { series: { granularity: series.granularity, columns: series.columns } } : {}),
+    ...(series
+      ? { series: { granularity: series.granularity, columns: series.columns, type: series.type } }
+      : {}),
     ...(names ? { names } : {}),
   }));
 }
@@ -187,8 +195,12 @@ export function startRecalculation(
       const acc = usePrimary ? primaryAcc : state.secondary?.accumulators.get(key);
       if (!cell || !acc || acc.count === 0) continue;
       const f32 = (usePrimary ? primary.f32 : secondary?.f32) ?? false;
-      const root = sheets[cell.sheetIndex]?.roots.has(cell.address) ?? false;
-      results.get(cell.sheet.id)?.set(cell.address, summarize(acc, uncertain.has(key), root, f32));
+      const outcome = sheets[cell.sheetIndex];
+      const root = outcome?.roots.has(cell.address) ?? false;
+      const period = outcome?.periods.get(cell.address);
+      results
+        .get(cell.sheet.id)
+        ?.set(cell.address, summarize(acc, uncertain.has(key), root, f32, period));
     }
     const progress: Recalculation["progress"] = {
       primary: { done: state.primary.done, total: state.primary.total },
@@ -290,9 +302,12 @@ export function formatUncertain(mean: number, sd: number): string {
 export function formatResult(result: CellResult): string {
   switch (result.kind) {
     case "number":
-      return formatNumber(result.value);
+      return result.period ? formatPeriod(result.value, result.period) : formatNumber(result.value);
     case "uncertain":
-      return formatUncertain(result.mean, result.sd);
+      // An uncertain period: its mean period, and the spread in periods.
+      return result.period
+        ? `${formatPeriod(result.mean, result.period)} ± ${formatNumber(Number(result.sd.toPrecision(2)))}`
+        : formatUncertain(result.mean, result.sd);
     case "text":
       return result.text;
     case "error":

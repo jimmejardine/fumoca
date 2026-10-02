@@ -15,6 +15,7 @@
  */
 
 import { columnLetters, columnNumber } from "./addresses";
+import { granularityOf, normalizePeriod } from "./periods";
 
 export type BinaryOperator = "+" | "-" | "*" | "/" | "^" | "=" | "<>" | "<" | ">" | "<=" | ">=";
 
@@ -26,14 +27,18 @@ export type Expr =
   | { type: "negate"; operand: Expr }
   | { type: "binary"; operator: BinaryOperator; left: Expr; right: Expr }
   | { type: "call"; name: string; args: Expr[] }
-  | { type: "lookup"; sheet: string; column?: string; when: LookupTime }
+  /**
+   * A series lookup (SPECS.md §5.3): `Sheet[Column]@when`, where `when` is any period: a literal,
+   * a cell, a name or a bracketed expression. With `until`, a range of periods (`@2027-01:2027-12`)
+   * for functions such as SUM.
+   */
+  | { type: "lookup"; sheet: string; column?: string; when: Expr; until?: Expr }
   /** `#REF!`: a reference that was moved off the grid by copying or filling. */
   | { type: "refError" }
   /** A named cell (SPECS.md §4.1), as written; names match regardless of case. */
-  | { type: "name"; name: string };
-
-/** The time in a series lookup: a period literal (`2026-10`) or a cell holding one. */
-export type LookupTime = { kind: "period"; text: string } | { kind: "ref"; address: string };
+  | { type: "name"; name: string }
+  /** A period literal (SPECS.md §3.1), in its standard form: `2027-Q1`, `2027-01`, `2027-01-15`. */
+  | { type: "period"; text: string };
 
 export class FormulaSyntaxError extends Error {
   override name = "FormulaSyntaxError";
@@ -47,6 +52,8 @@ type Token =
   | { kind: "column"; name: string }
   | { kind: "at" }
   | { kind: "period"; text: string }
+  /** A period written in a formula: `2027-01`, not after `@`. */
+  | { kind: "periodValue"; text: string }
   | { kind: "op"; op: string }
   | { kind: "refError" }
   | { kind: "end" };
@@ -79,6 +86,12 @@ const SHEET_REF =
 /** Sheet names that can be written without quotes in a reference. */
 const PLAIN_SHEET_NAME = /^[A-Za-z_][A-Za-z0-9_.]*$/;
 const COLUMN = /^\[([^\]]*)\]/;
+/**
+ * A period in a formula: a year joined by a hyphen to a quarter, week, month, day or hour (not a
+ * year alone, which is a number). Loose forms are fixed up: `2027-1` is `2027-01`.
+ */
+const PERIOD_VALUE =
+  /^(\d{4}-(?:[qQ][1-4]|[wW]\d{1,2}|\d{1,2}(?:-\d{1,2}(?:[tT]\d{1,2})?)?))(?![\w.$])/;
 /** Period literals, longest first (SPECS.md §3.1). */
 const PERIOD =
   /^(\d{4}-\d{2}-\d{2}T\d{2}|\d{4}-\d{2}-\d{2}|\d{4}-W\d{2}|\d{4}-Q[1-4]|\d{4}-\d{2}|\d{4})(?![\w.])/;
@@ -137,6 +150,15 @@ function tokenize(text: string, lenient = false): Token[] {
         start: pos,
       });
       pos += ref[0].length;
+      continue;
+    }
+    // A period written without spaces is a period, not a subtraction: `2027-01` is January 2027,
+    // `2027 - 01` is 2026 (SPECS.md §3.1). Only valid periods count: `2027-13` subtracts.
+    const period = PERIOD_VALUE.exec(rest);
+    const periodText = period?.[1] && normalizePeriod(period[1]);
+    if (period && periodText && granularityOf(periodText)) {
+      tokens.push({ kind: "periodValue", text: periodText });
+      pos += period[0].length;
       continue;
     }
     const number = NUMBER.exec(rest);
@@ -283,21 +305,61 @@ class Parser {
     if (at.kind !== "at") {
       throw new FormulaSyntaxError(`Expected '@' and a time after ${sheet}, found ${describe(at)}`);
     }
-    const time = this.next();
-    const when: LookupTime | undefined =
-      time.kind === "period"
-        ? { kind: "period", text: time.text }
-        : time.kind === "ref"
-          ? { kind: "ref", address: time.address }
-          : undefined;
-    if (!when) {
-      throw new FormulaSyntaxError(
-        `Expected a period (like 2026-10) or a cell after '@', found ${describe(time)}`,
-      );
+    const when = this.lookupTime();
+    // A range of periods: `@2027-01:2027-12`.
+    let until: Expr | undefined;
+    if (when.type === "period" && this.peekOp() === ":") {
+      this.pos++;
+      until = this.lookupTime();
+      if (until.type !== "period") {
+        throw new FormulaSyntaxError(
+          "A range of periods needs a period after ':', as in @2027-01:2027-12",
+        );
+      }
     }
-    return column === undefined
-      ? { type: "lookup", sheet, when }
-      : { type: "lookup", sheet, column, when };
+    const lookup: Expr =
+      column === undefined
+        ? { type: "lookup", sheet, when }
+        : { type: "lookup", sheet, column, when };
+    return until ? { ...lookup, until } : lookup;
+  }
+
+  /** The time after `@`: a period literal, a cell, a name, or an expression in brackets. */
+  private lookupTime(): Expr {
+    const time = this.next();
+    switch (time.kind) {
+      case "period":
+      case "periodValue":
+        return { type: "period", text: time.text };
+      case "number":
+        // A year after ':' (the tokenizer reads it as a number).
+        if (Number.isInteger(time.value) && time.value >= 1000 && time.value <= 9999) {
+          return { type: "period", text: String(time.value) };
+        }
+        break;
+      case "ref":
+        if (time.sheet === undefined) return { type: "ref", address: time.address };
+        break;
+      case "name":
+        // A function call, such as @PERIOD.MONTH(2027, 6), or a named cell.
+        if (this.peekOp() === "(") {
+          this.pos--;
+          return this.primary();
+        }
+        return { type: "name", name: time.text };
+      case "op":
+        if (time.op === "(") {
+          const expr = this.comparison();
+          this.expectOp(")");
+          return expr;
+        }
+        break;
+      default:
+        break;
+    }
+    throw new FormulaSyntaxError(
+      `Expected a period (like 2026-10), a cell, a name or (an expression) after '@', found ${describe(time)}`,
+    );
   }
 
   /** Parses the rest of a range, after its first corner: `:B5`. */
@@ -319,6 +381,8 @@ class Parser {
     switch (token.kind) {
       case "number":
         return { type: "number", value: token.value };
+      case "periodValue":
+        return { type: "period", text: token.text };
       case "refError":
         return { type: "refError" };
       case "ref":
@@ -369,6 +433,8 @@ function describe(token: Token): string {
   switch (token.kind) {
     case "number":
       return `number ${token.value}`;
+    case "periodValue":
+      return `period ${token.text}`;
     case "refError":
       return "#REF!";
     case "ref":

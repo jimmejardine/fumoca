@@ -1,13 +1,11 @@
 import { cellKey, compileWorkbook, evaluateCpu } from "@fumoca/engine";
 import { combinationCount, type Workbook } from "@fumoca/storage";
 import { describe, expect, it } from "vitest";
+import { sheetInputs } from "../recalc";
 import { ARK_DRAWS, ARK_VALUES } from "./arkTesla.generated";
 import { createTeslaWorkbook } from "./teslaModel";
 
-const compile = (workbook: Workbook) =>
-  compileWorkbook(
-    workbook.sheets.map((s) => ({ name: s.name, cells: s.cells, names: s.names ?? {} })),
-  );
+const compile = (workbook: Workbook) => compileWorkbook(sheetInputs(workbook));
 
 /** The workbook with every input replaced by the value it drew in ARK's saved run. */
 function withArkDraws(workbook: Workbook): Workbook {

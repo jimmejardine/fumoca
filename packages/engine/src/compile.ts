@@ -1,7 +1,15 @@
-import { addressPosition, rangeAddresses } from "./addresses";
+import { addressPosition, columnLetters, rangeAddresses } from "./addresses";
+import { calendar, GRANULARITY_ORDER, jsCalendar } from "./calendar";
+import { binary, unary } from "./cpu";
 import type { BinaryFn, DistKind, Op, Program, Reg, UnaryFn } from "./ir";
-import { type BinaryOperator, type Expr, type LookupTime, parseFormula } from "./parser";
-import { type Granularity, granularityOf } from "./periods";
+import { type BinaryOperator, type Expr, parseFormula } from "./parser";
+import {
+  formatPeriod,
+  type Granularity,
+  granularityOf,
+  normalizePeriod,
+  periodValue,
+} from "./periods";
 import { hash32 } from "./random";
 
 /** Cell contents keyed by address: a number, or formula text starting with "=". */
@@ -44,7 +52,38 @@ export interface SheetInput {
    * Present on time-series sheets: column A holds the periods, and value columns B, C, … hold the
    * series named by `columns`, in order.
    */
-  series?: { granularity: Granularity; columns: readonly string[] };
+  series?: {
+    granularity: Granularity;
+    columns: readonly string[];
+    /** What the series hold, which sets how lookups map between granularities (SPECS.md §5.5). */
+    type?: SeriesKind;
+  };
+}
+
+/** What a series holds (SPECS.md §5.5): an amount over a period, a level at a time, or a rate. */
+export type SeriesKind = "flow" | "level" | "rate";
+
+/**
+ * How lookups map between granularities, by series type (SPECS.md §5.4, §5.5): coarser lookups
+ * combine the rows in their window, finer lookups read inside the containing row's period.
+ */
+const LOOKUP_MAPPING: Record<
+  SeriesKind,
+  { coarser: "sum" | "end" | "average"; finer: "spread" | "linear" | "hold" }
+> = {
+  flow: { coarser: "sum", finer: "spread" },
+  level: { coarser: "end", finer: "linear" },
+  rate: { coarser: "average", finer: "hold" },
+};
+
+/** A series column, resolved: its rows in period order, each with its value cell's key. */
+interface SeriesColumn {
+  sheetIndex: number;
+  name: string;
+  column: string;
+  granularity: Granularity;
+  kind: SeriesKind;
+  rows: { index: number; key: string }[];
 }
 
 /** Per-sheet outcome of compiling: why cells failed, which cells are roots, which are text. */
@@ -55,6 +94,8 @@ export interface SheetOutcome {
   roots: Set<string>;
   /** Text cells. They may sit in a sheet but can't be used in calculations yet. */
   labels: Set<string>;
+  /** Cells holding periods (SPECS.md §3.1), with their granularity: their values are indexes. */
+  periods: Map<string, Granularity>;
 }
 
 /**
@@ -148,8 +189,11 @@ function parseCell(input: number | string): Expr | null {
     }
   }
   const value = Number(input);
-  if (input.trim() === "" || Number.isNaN(value)) return null;
-  return { type: "number", value };
+  if (input.trim() !== "" && !Number.isNaN(value)) return { type: "number", value };
+  // A period typed into a cell, such as 2027-Q1 or 2027-01 (a year alone is a number).
+  const period = normalizePeriod(input);
+  const granularity = granularityOf(period);
+  return granularity && granularity !== "year" ? { type: "period", text: period } : null;
 }
 
 /** A 32-bit FNV-1a hash of a cell's sheet name and address: the base of its random streams. */
@@ -248,70 +292,39 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     return sheetIndex === fromSheet ? address : `${sheetNames(sheetIndex)}!${address}`;
   };
 
-  // Series sheets: period text in column A → row number.
-  const seriesRows = new Map<number, Map<string, number>>();
-  const rowsOf = (sheetIndex: number): Map<string, number> => {
-    let rows = seriesRows.get(sheetIndex);
-    if (!rows) {
-      rows = new Map();
-      for (const [address, value] of Object.entries(sheets[sheetIndex]?.cells ?? {})) {
-        const match = /^A([0-9]+)$/.exec(normalizeAddress(address));
-        if (match) rows.set(String(value).trim(), Number(match[1]));
-      }
-      seriesRows.set(sheetIndex, rows);
-    }
-    return rows;
-  };
-
-  /** Resolves a lookup to the key of the series cell it names. */
-  const resolveLookup = (
-    lookup: { sheet: string; column?: string; when: LookupTime },
-    fromSheet: number,
-  ): string => {
+  /** Resolves a lookup's sheet and column to the series it reads, rows in period order. */
+  const resolveSeries = (lookup: { sheet: string; column?: string }): SeriesColumn => {
     const target = sheets.findIndex((s) => s.name.toLowerCase() === lookup.sheet.toLowerCase());
     const sheet = sheets[target];
     if (!sheet) throw new CompileError(`There is no sheet named ${lookup.sheet}`, "#REF!");
     if (!sheet.series) throw new CompileError(`${sheet.name} is not a series sheet`, "#REF!");
-
-    const columns = sheet.series.columns;
+    const { columns, granularity, type = "level" } = sheet.series;
     const column =
       lookup.column === undefined
         ? 0
         : columns.findIndex((c) => c.toLowerCase() === lookup.column?.toLowerCase());
     if (column < 0 || column >= columns.length) {
-      const name = lookup.column ?? "value";
-      throw new CompileError(`${sheet.name} has no ${name} column`, "#REF!");
+      throw new CompileError(`${sheet.name} has no ${lookup.column ?? "value"} column`, "#REF!");
     }
-
-    let period: string;
-    if (lookup.when.kind === "period") {
-      period = lookup.when.text;
-    } else {
-      const input = inputs.get(cellKey(fromSheet, lookup.when.address));
-      if (input === undefined || (typeof input === "string" && input.startsWith("="))) {
-        throw new CompileError(
-          `${lookup.when.address} must hold a period, like 2026-10 (calculated times aren't supported yet)`,
-          "#VALUE!",
-        );
+    // Column A holds the periods; rows of another granularity are left out (they show red).
+    const rows: SeriesColumn["rows"] = [];
+    for (const [address, value] of Object.entries(sheet.cells)) {
+      const match = /^A([0-9]+)$/.exec(normalizeAddress(address));
+      const period = match && periodValue(String(value));
+      if (period?.granularity === granularity) {
+        const letter = columnLetters(column + 2);
+        rows.push({ index: period.index, key: cellKey(target, `${letter}${match?.[1]}`) });
       }
-      period = String(input).trim();
     }
-    const granularity = granularityOf(period);
-    if (!granularity) throw new CompileError(`${period} is not a period`, "#VALUE!");
-    if (granularity !== sheet.series.granularity) {
-      throw new CompileError(
-        `${sheet.name} holds ${GRANULARITY_NAMES[sheet.series.granularity]} per row, ` +
-          `but ${period} is ${GRANULARITY_NAMES[granularity]}`,
-        "#N/A",
-      );
-    }
-    const row = rowsOf(target).get(period);
-    if (row === undefined) throw new CompileError(`${sheet.name} has no row for ${period}`, "#N/A");
-    const key = cellKey(target, `${String.fromCharCode(66 + column)}${row}`);
-    if (!exprs.has(key) && !labels.has(key) && !errors.has(key)) {
-      throw new CompileError(`${sheet.name} has no ${columns[column]} value for ${period}`, "#N/A");
-    }
-    return key;
+    rows.sort((a, b) => a.index - b.index);
+    return {
+      sheetIndex: target,
+      name: sheet.name,
+      column: columns[column] ?? "",
+      granularity,
+      kind: type,
+      rows,
+    };
   };
 
   /** Resolves a cell reference, which may name another sheet (`Inputs!B3`), to its key. */
@@ -366,6 +379,7 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
 
   // Dependencies, with every reference and lookup resolved to its target cell.
   const lookupTargets = new WeakMap<Expr, string>();
+  const lookupSeries = new WeakMap<Expr, SeriesColumn>();
   const rangeTargets = new WeakMap<Expr, RangeCells>();
   const collectDeps = (expr: Expr, sheetIndex: number, into: Set<string>): void => {
     switch (expr.type) {
@@ -376,9 +390,11 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         break;
       }
       case "lookup": {
-        const key = resolveLookup(expr, sheetIndex);
-        lookupTargets.set(expr, key);
-        into.add(key);
+        // A lookup may read any row of its series, and depends on its time's cells too.
+        const series = resolveSeries(expr);
+        lookupSeries.set(expr, series);
+        for (const { key } of series.rows) if (inputs.has(key)) into.add(key);
+        collectDeps(expr.when, sheetIndex, into);
         break;
       }
       case "range": {
@@ -437,7 +453,92 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     return hash32((cellStreams.base + Math.imul(cellStreams.next++, 0x9e3779b9)) >>> 0);
   };
 
-  const emit = (op: Op): Reg => ops.push(op) - 1;
+  /**
+   * Adds an operation. One on constants is worked out now, with the CPU's own arithmetic, so the
+   * GPU gets the exact value: 10^6 is 1,000,000, where the GPU's pow would be a hair off.
+   */
+  const emit = (op: Op): Reg => {
+    const value = (reg: Reg) => {
+      const source = ops[reg];
+      return source?.kind === "const" ? source.value : undefined;
+    };
+    if (op.kind === "unary") {
+      const a = value(op.a);
+      if (a !== undefined) return ops.push({ kind: "const", value: unary(op.fn, a) }) - 1;
+    } else if (op.kind === "binary") {
+      const a = value(op.a);
+      const b = value(op.b);
+      if (a !== undefined && b !== undefined) {
+        return ops.push({ kind: "const", value: binary(op.fn, a, b) }) - 1;
+      }
+    }
+    return ops.push(op) - 1;
+  };
+  const select = (cond: Reg, then: Reg, otherwise: Reg): Reg =>
+    emit({ kind: "select", cond, then, otherwise });
+
+  // The granularity of every register holding a period; other registers hold numbers.
+  const periodOf = new Map<Reg, Granularity>();
+  const cellPeriods = new Map<string, Granularity>();
+  const typed = (reg: Reg, granularity: Granularity | undefined): Reg => {
+    if (granularity) periodOf.set(reg, granularity);
+    return reg;
+  };
+  const kindName = (granularity: Granularity | undefined) =>
+    granularity ? `a ${granularity}` : "a number";
+  /** The one type of some values: their granularity, or undefined for numbers. */
+  const sameType = (regs: Reg[], what: string): Granularity | undefined => {
+    const [first, ...rest] = regs.map((reg) => periodOf.get(reg));
+    const other = rest.find((g) => g !== first);
+    if (rest.length > 0 && rest.some((g) => g !== first)) {
+      throw new CompileError(`${what} mixes ${kindName(first)} and ${kindName(other)}`, "#VALUE!");
+    }
+    return first;
+  };
+  const cal = calendar({
+    constant: (value) => emit({ kind: "const", value }),
+    un: (fn, a) => emit({ kind: "unary", fn, a }),
+    bin: (fn, a, b) => emit({ kind: "binary", fn, a, b }),
+    select: (cond, then, otherwise) => emit({ kind: "select", cond, then, otherwise }),
+  });
+
+  /**
+   * Arithmetic and comparisons on periods (SPECS.md §3.1): a period plus or minus a number is a
+   * period of the same granularity; a period minus a period of the same granularity is the number
+   * of periods between them; periods of one granularity compare. Anything else is #VALUE!.
+   */
+  const emitBinary = (operator: BinaryOperator, a: Reg, b: Reg): Reg => {
+    const reg = emit({ kind: "binary", fn: BINARY_OPERATORS[operator], a, b });
+    const ga = periodOf.get(a);
+    const gb = periodOf.get(b);
+    if (!ga && !gb) return reg;
+    const fail = (why: string): never => {
+      throw new CompileError(why, "#VALUE!");
+    };
+    if (ga && gb && ga !== gb) {
+      fail(
+        `Can't combine a ${ga} with a ${gb}: convert one with PERIOD.${ga.toUpperCase()} or PERIOD.${gb.toUpperCase()}`,
+      );
+    }
+    switch (operator) {
+      case "+":
+        if (ga && gb) fail(`Can't add two ${ga}s together`);
+        return typed(reg, ga ?? gb);
+      case "-":
+        if (!ga) fail(`Can't subtract a ${gb} from a number`);
+        // A period minus a period is a count; a period minus a number, a period.
+        return gb ? reg : typed(reg, ga);
+      case "*":
+      case "/":
+      case "^":
+        return fail(
+          `Can't ${operator === "^" ? "raise" : operator === "*" ? "multiply" : "divide"} a ${ga ?? gb}: convert it to a number first, e.g. with YEAR or MONTH`,
+        );
+      default:
+        if (!ga || !gb) fail(`Can't compare a ${ga ?? gb} with a number`);
+        return reg;
+    }
+  };
 
   const readCell = (key: string, fromSheet: number): Reg => {
     if (labels.has(key)) {
@@ -453,14 +554,146 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     return zero;
   };
 
+  /**
+   * A series lookup (SPECS.md §5.3–5.5) at a time held in a register. A time fixed when compiling
+   * reads its row directly, and a missing period is #N/A then; a calculated time (even an
+   * uncertain one) selects among the rows as it runs, and a missing period is an error value.
+   * Times of another granularity map by the series type: coarser times combine the rows in their
+   * window (flows sum, levels take the last, rates average), finer times read inside the
+   * containing row's period (flows spread evenly, levels interpolate towards the next row, rates
+   * hold). Empty entries: flows read 0, levels carry the last value forward, rates are an error.
+   */
+  const emitLookup = (
+    expr: { sheet: string; column?: string },
+    time: Reg,
+    sheetIndex: number,
+  ): Reg => {
+    const series = lookupSeries.get(expr as Expr) ?? resolveSeries(expr);
+    const { granularity, kind, name } = series;
+    const k = (value: number) => emit({ kind: "const", value });
+    const nan = () => k(Number.NaN);
+    const at = periodOf.get(time) ?? (granularity === "year" ? "year" : undefined);
+    if (!at) {
+      throw new CompileError(
+        `The time after @ must be a period, like 2026-10: ${name} holds ${GRANULARITY_NAMES[granularity]} per row`,
+        "#VALUE!",
+      );
+    }
+    const op = ops[time];
+    const fixed = op?.kind === "const" ? op.value : undefined;
+    const missing = (index: number, g: Granularity) =>
+      new CompileError(`${name} has no row for ${formatPeriod(index, g)}`, "#N/A");
+
+    // Each row's value, with empty entries filled as the series type says.
+    let last: Reg | undefined;
+    const values = series.rows.map(({ index, key }) => {
+      let reg: Reg;
+      if (cells.has(key) || labels.has(key)) reg = readCell(key, sheetIndex);
+      else if (kind === "flow") reg = k(0);
+      else if (kind === "level") reg = last ?? nan();
+      else reg = nan();
+      last = reg;
+      return { index, reg };
+    });
+    // A period is either known when compiling (`fixed`) or calculated as the model runs (`reg`).
+    type Period = { fixed: number } | { reg: Reg };
+    const shift = (p: Period, n: number): Period =>
+      "fixed" in p
+        ? { fixed: p.fixed + n }
+        : { reg: emit({ kind: "binary", fn: "add", a: p.reg, b: k(n) }) };
+    const regOf = (p: Period): Reg => ("fixed" in p ? k(p.fixed) : p.reg);
+    /** A period at another granularity. */
+    const convert = (p: Period, from: Granularity, to: Granularity): Period =>
+      "fixed" in p
+        ? { fixed: jsCalendar.convert(p.fixed, from, to) }
+        : { reg: cal.convert(p.reg, from, to) };
+    /** The value of a row: directly when the period is fixed, else selected among the rows. */
+    const valueAt = (p: Period, orElse?: Reg): Reg => {
+      if ("fixed" in p) {
+        const row = values.find((v) => v.index === p.fixed);
+        if (row) return row.reg;
+        if (orElse !== undefined) return orElse;
+        throw missing(p.fixed, granularity);
+      }
+      let result = orElse ?? nan();
+      for (const { index, reg } of [...values].reverse()) {
+        const cond = emit({ kind: "binary", fn: "eq", a: p.reg, b: k(index) });
+        result = select(cond, reg, result);
+      }
+      return result;
+    };
+    const when: Period = fixed !== undefined ? { fixed } : { reg: time };
+
+    const rank = (g: Granularity) => GRANULARITY_ORDER.indexOf(g);
+    if (at === granularity) return valueAt(when);
+
+    if (rank(at) > rank(granularity)) {
+      // Coarser: combine the rows in each window.
+      const method = LOOKUP_MAPPING[kind].coarser;
+      const windows = new Map<number, Reg[]>();
+      for (const { index, reg } of values) {
+        const window = jsCalendar.convert(index, granularity, at);
+        windows.set(window, [...(windows.get(window) ?? []), reg]);
+      }
+      const combine = (regs: Reg[]): Reg => {
+        if (method === "end") return regs[regs.length - 1] ?? nan();
+        const sum = regs.reduce((acc, reg) => emit({ kind: "binary", fn: "add", a: acc, b: reg }));
+        return method === "sum"
+          ? sum
+          : emit({ kind: "binary", fn: "div", a: sum, b: k(regs.length) });
+      };
+      if ("fixed" in when) {
+        const regs = windows.get(when.fixed);
+        if (!regs) throw missing(when.fixed, at);
+        return combine(regs);
+      }
+      let result = nan();
+      for (const [window, regs] of [...windows].reverse()) {
+        const cond = emit({ kind: "binary", fn: "eq", a: when.reg, b: k(window) });
+        result = select(cond, combine(regs), result);
+      }
+      return result;
+    }
+
+    // Finer: read inside the row's period containing the time.
+    const method = LOOKUP_MAPPING[kind].finer;
+    const containing = convert(when, at, granularity);
+    const value = valueAt(containing);
+    if (method === "hold") return value;
+    // How many finer periods the row's period holds, and how far into it the time is.
+    const start = regOf(convert(containing, granularity, at));
+    const end = regOf(convert(shift(containing, 1), granularity, at));
+    const count = emit({ kind: "binary", fn: "sub", a: end, b: start });
+    if (method === "spread") return emit({ kind: "binary", fn: "div", a: value, b: count });
+    const offset = emit({ kind: "binary", fn: "sub", a: regOf(when), b: start });
+    const fraction = emit({ kind: "binary", fn: "div", a: offset, b: count });
+    // Towards the next row's value; after the last row, the value holds.
+    const next = valueAt(shift(containing, 1), value);
+    const step = emit({ kind: "binary", fn: "sub", a: next, b: value });
+    const interpolated = emit({
+      kind: "binary",
+      fn: "add",
+      a: value,
+      b: emit({ kind: "binary", fn: "mul", a: fraction, b: step }),
+    });
+    return select(emit({ kind: "unary", fn: "finite", a: next }), interpolated, value);
+  };
+
   const emitExpr = (expr: Expr, sheetIndex: number): Reg => {
     switch (expr.type) {
       case "number":
         return emit({ kind: "const", value: expr.value });
       case "ref":
         return readCell(lookupTargets.get(expr) ?? resolveRef(expr, sheetIndex), sheetIndex);
-      case "lookup":
-        return readCell(lookupTargets.get(expr) ?? "", sheetIndex);
+      case "lookup": {
+        if (expr.until) {
+          throw new CompileError(
+            "A range of periods like @2027-01:2027-12 can only be used inside a function such as SUM",
+            "#VALUE!",
+          );
+        }
+        return emitLookup(expr, emitExpr(expr.when, sheetIndex), sheetIndex);
+      }
       case "name":
         return readCell(lookupTargets.get(expr) ?? resolveName(expr.name), sheetIndex);
       case "refError":
@@ -470,15 +703,23 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
           "A range like A1:B5 can only be used inside a function such as SUM, AVERAGE or INDEX",
           "#VALUE!",
         );
-      case "negate":
-        return emit({ kind: "unary", fn: "neg", a: emitExpr(expr.operand, sheetIndex) });
+      case "period": {
+        const period = periodValue(expr.text);
+        if (!period) throw new CompileError(`${expr.text} is not a period`, "#VALUE!");
+        return typed(emit({ kind: "const", value: period.index }), period.granularity);
+      }
+      case "negate": {
+        const operand = emitExpr(expr.operand, sheetIndex);
+        const granularity = periodOf.get(operand);
+        if (granularity) throw new CompileError(`Can't negate a ${granularity}`, "#VALUE!");
+        return emit({ kind: "unary", fn: "neg", a: operand });
+      }
       case "binary":
-        return emit({
-          kind: "binary",
-          fn: BINARY_OPERATORS[expr.operator],
-          a: emitExpr(expr.left, sheetIndex),
-          b: emitExpr(expr.right, sheetIndex),
-        });
+        return emitBinary(
+          expr.operator,
+          emitExpr(expr.left, sheetIndex),
+          emitExpr(expr.right, sheetIndex),
+        );
       case "call":
         return emitCall(expr.name, expr.args, sheetIndex);
     }
@@ -494,10 +735,28 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         );
       }
     };
-    const arg = (i: number): Reg => {
+    /** An argument's value. Unless `periods` is set, it must be a number. */
+    const arg = (i: number, periods = false): Reg => {
       const expr = args[i];
       if (!expr) throw new CompileError(`${name} is missing argument ${i + 1}`, "#NAME?");
-      return emitExpr(expr, sheetIndex);
+      const reg = emitExpr(expr, sheetIndex);
+      const granularity = periodOf.get(reg);
+      if (granularity && !periods) {
+        throw new CompileError(
+          `${name} takes numbers, not periods: argument ${i + 1} is a ${granularity}`,
+          "#VALUE!",
+        );
+      }
+      return reg;
+    };
+    /** A period argument: its value and granularity. */
+    const periodArg = (i: number): { reg: Reg; granularity: Granularity } => {
+      const reg = arg(i, true);
+      const granularity = periodOf.get(reg);
+      if (!granularity) {
+        throw new CompileError(`${name}'s argument ${i + 1} must be a period`, "#VALUE!");
+      }
+      return { reg, granularity };
     };
 
     const constant = (value: number): Reg => emit({ kind: "const", value });
@@ -519,19 +778,53 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
       if (!range) throw new CompileError(`${name}'s argument ${i + 1} must be ${what}`, "#VALUE!");
       return range;
     };
-    /** A range cell's number, or null for an empty or text cell, which range functions skip. */
-    const rangeNumber = (key: string): Reg | null =>
-      cells.has(key) ? readCell(key, sheetIndex) : null;
+    /**
+     * A range cell's number, or null for an empty or text cell, which range functions skip. A
+     * period is an error unless `periods` is set.
+     */
+    const rangeNumber = (key: string, periods = false): Reg | null => {
+      if (!cells.has(key)) return null;
+      const reg = readCell(key, sheetIndex);
+      if (periodOf.has(reg) && !periods) {
+        throw new CompileError(
+          `${name} takes numbers, not periods: ${display(key, sheetIndex)} is a ${periodOf.get(reg)}`,
+          "#VALUE!",
+        );
+      }
+      return reg;
+    };
     /** A range cell's value when picked out (INDEX): 0 if empty, as in Excel; text is an error. */
     const rangeValue = (key: string): Reg =>
       labels.has(key) ? error() : readCell(key, sheetIndex);
     /** Every number among the arguments: scalars, and the numeric cells of ranges. */
-    const numbers = (): Reg[] =>
+    const numbers = (periods = false): Reg[] =>
       args.flatMap((expr, i) =>
         expr.type === "range"
-          ? rangeArg(i).keys.flatMap((key) => rangeNumber(key) ?? [])
-          : [arg(i)],
+          ? rangeArg(i).keys.flatMap((key) => rangeNumber(key, periods) ?? [])
+          : expr.type === "lookup" && expr.until
+            ? lookupRange(expr, expr.when, expr.until)
+            : [arg(i, periods)],
       );
+    /** A lookup at each period from `from` to `until`: `Sales[Units]@2027-01:2027-12`. */
+    const lookupRange = (expr: Expr & { type: "lookup" }, from: Expr, until: Expr): Reg[] => {
+      const start = from.type === "period" ? periodValue(from.text) : null;
+      const end = until.type === "period" ? periodValue(until.text) : null;
+      if (!start || !end || start.granularity !== end.granularity) {
+        throw new CompileError(
+          "A range of periods needs two periods of one granularity",
+          "#VALUE!",
+        );
+      }
+      if (end.index < start.index) {
+        throw new CompileError("A range of periods must run forwards in time", "#VALUE!");
+      }
+      if (end.index - start.index >= MAX_RANGE_CELLS) {
+        throw new CompileError("The range of periods is too long", "#VALUE!");
+      }
+      return Array.from({ length: end.index - start.index + 1 }, (_, n) =>
+        emitLookup(expr, typed(constant(start.index + n), start.granularity), sheetIndex),
+      );
+    };
     const fold = (fn: BinaryFn, regs: Reg[], empty: number): Reg =>
       regs.reduce<Reg | undefined>(
         (acc, reg) => (acc === undefined ? reg : bin(fn, acc, reg)),
@@ -555,7 +848,13 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
       for (let i = list.length; i >= 1; i--) {
         result = select(bin("eq", at, constant(i)), list[i - 1] ?? error(), result);
       }
-      return result;
+      return typed(
+        result,
+        sameType(
+          list.filter((reg) => reg !== zero),
+          name,
+        ),
+      );
     };
     /**
      * Where `x` is in `list` (1-based), as MATCH finds it: type 1, the last value <= x (Excel's
@@ -563,6 +862,7 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
      * the first equal value. Empty and text cells never match. No match is an error (#N/A).
      */
     const match = (x: Reg, list: (Reg | null)[], type: number): Reg => {
+      sameType([x, ...list.filter((r): r is Reg => r !== null)], name);
       const test: BinaryFn = type > 0 ? "le" : type < 0 ? "ge" : "eq";
       const positions = [...list.keys()];
       // The outermost test wins: the last position for approximate types, the first for exact.
@@ -575,6 +875,13 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         }
       }
       return result;
+    };
+    /** A day from year, month and day, carrying months beyond 12 and days beyond the month. */
+    const date = (year: Reg, month: Reg, day: Reg): Reg => {
+      const m = bin("sub", month, constant(1));
+      const carried = bin("add", year, cal.div(m, 12));
+      const first = cal.serialOf(carried, bin("add", cal.mod(m, 12), constant(1)), constant(1));
+      return bin("add", first, bin("sub", day, constant(1)));
     };
     const oneDimensional = (range: RangeCells): void => {
       if (range.rows !== 1 && range.columns !== 1) {
@@ -617,10 +924,13 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         arity(2);
         return emit({ kind: "binary", fn: "pow", a: arg(0), b: arg(1) });
       case "MIN":
-      case "MAX":
+      case "MAX": {
         // Empty and text cells in ranges are skipped; with no numbers at all, the answer is 0.
+        // Periods of one granularity have a minimum and maximum too.
         if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
-        return fold(name === "MIN" ? "min" : "max", numbers(), 0);
+        const list = numbers(true);
+        return typed(fold(name === "MIN" ? "min" : "max", list, 0), sameType(list, name));
+      }
       case "SUM":
         if (args.length === 0) arity(1, Number.POSITIVE_INFINITY);
         return fold("add", numbers(), 0);
@@ -691,7 +1001,11 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         arity(2, 3);
         const range = rangeArg(1);
         oneDimensional(range);
-        return match(arg(0), range.keys.map(rangeNumber), constantArg(2, 1));
+        return match(
+          arg(0, true),
+          range.keys.map((key) => rangeNumber(key, true)),
+          constantArg(2, 1),
+        );
       }
       case "VLOOKUP":
       case "HLOOKUP": {
@@ -704,8 +1018,8 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
           (vertical
             ? table.keys[line * table.columns + k]
             : table.keys[k * table.columns + line]) ?? "";
-        const firsts = Array.from({ length: lines }, (_, line) => rangeNumber(at(line, 0)));
-        const found = match(arg(0), firsts, constantArg(3, 1) === 0 ? 0 : 1);
+        const firsts = Array.from({ length: lines }, (_, line) => rangeNumber(at(line, 0), true));
+        const found = match(arg(0, true), firsts, constantArg(3, 1) === 0 ? 0 : 1);
         const valuesIn = (k: number) =>
           pick(
             found,
@@ -743,13 +1057,15 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         arity(2);
         let value: Reg;
         try {
-          value = arg(0);
+          value = arg(0, true);
         } catch (failure) {
           // An error in the formula itself, such as a lookup past the end of a table.
-          if (failure instanceof CompileError) return arg(1);
+          if (failure instanceof CompileError) return arg(1, true);
           throw failure;
         }
-        return select(un("finite", value), value, arg(1));
+        const fallback = arg(1, true);
+        const granularity = sameType([value, fallback], name);
+        return typed(select(un("finite", value), value, fallback), granularity);
       }
       case "INT":
         arity(1);
@@ -791,6 +1107,99 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
         const b = arg(1);
         return bin("sub", a, bin("mul", b, un("floor", bin("div", a, b))));
       }
+      case "PERIOD.YEAR":
+      case "PERIOD.QUARTER":
+      case "PERIOD.MONTH":
+      case "PERIOD.WEEK":
+      case "PERIOD.DAY":
+      case "PERIOD.HOUR": {
+        const to = name.slice("PERIOD.".length).toLowerCase() as Granularity;
+        // Built from numbers: PERIOD.YEAR(2027), PERIOD.QUARTER(2027, 1), PERIOD.MONTH(2027, 1),
+        // PERIOD.DAY(2027, 1, 15). Parts out of range carry over, as in Excel's DATE.
+        const parts = {
+          year: "the year",
+          quarter: "a year and a quarter",
+          month: "a year and a month",
+          day: "a year, month and day",
+          week: "",
+          hour: "",
+        }[to];
+        const needed = { year: 1, quarter: 2, month: 2, day: 3, week: 0, hour: 0 }[to];
+        const usage = parts ? `a period, or ${parts}` : "a period, to convert it";
+        if (args.length === 0 || args.length > Math.max(1, needed)) {
+          throw new CompileError(`${name} takes ${usage}`, "#NAME?");
+        }
+        const first = arg(0, true);
+        const from = periodOf.get(first);
+        if (from) {
+          // A period at another granularity.
+          if (args.length > 1) throw new CompileError(`${name} takes ${usage}`, "#VALUE!");
+          return typed(cal.convert(first, from, to), to);
+        }
+        if (args.length !== needed) throw new CompileError(`${name} takes ${usage}`, "#VALUE!");
+        switch (to) {
+          case "year":
+            // A new register: the argument's own stays a number.
+            return typed(bin("add", first, constant(0)), "year");
+          case "quarter":
+          case "month": {
+            const per = to === "quarter" ? 4 : 12;
+            const index = bin(
+              "add",
+              bin("mul", first, constant(per)),
+              bin("sub", arg(1), constant(1)),
+            );
+            return typed(index, to);
+          }
+          default:
+            return typed(date(first, arg(1), arg(2)), "day");
+        }
+      }
+      case "DATE":
+        arity(3);
+        return typed(date(arg(0), arg(1), arg(2)), "day");
+      case "PERIOD.START":
+      case "PERIOD.END": {
+        // The first or last day of a period.
+        arity(1);
+        const { reg, granularity } = periodArg(0);
+        if (name === "PERIOD.START") return typed(cal.toDay(reg, granularity), "day");
+        const next = cal.toDay(bin("add", reg, constant(1)), granularity);
+        return typed(
+          granularity === "hour" ? cal.toDay(reg, granularity) : bin("sub", next, constant(1)),
+          "day",
+        );
+      }
+      case "YEAR":
+      case "QUARTER":
+      case "MONTH":
+      case "DAY":
+      case "WEEKDAY":
+      case "HOUR": {
+        // Parts of a period, as numbers. A plain number is an Excel serial date, as in Excel.
+        arity(1);
+        const value = arg(0, true);
+        const granularity = periodOf.get(value) ?? "day";
+        switch (name) {
+          case "YEAR":
+            return cal.convert(value, granularity, "year");
+          case "QUARTER":
+            return bin("add", cal.mod(cal.convert(value, granularity, "quarter"), 4), constant(1));
+          case "MONTH":
+            return bin("add", cal.mod(cal.toMonth(value, granularity), 12), constant(1));
+          case "DAY":
+            return cal.dateOf(cal.toDay(value, granularity)).day;
+          case "WEEKDAY":
+            // Excel's default numbering: Sunday is 1.
+            return bin(
+              "add",
+              cal.mod(bin("sub", cal.toDay(value, granularity), constant(1)), 7),
+              constant(1),
+            );
+          default:
+            return granularity === "hour" ? cal.mod(value, 24) : constant(0);
+        }
+      }
       case "RRI": {
         // The equivalent annual growth rate from pv to fv over n periods.
         arity(3);
@@ -818,9 +1227,10 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
       case "IF": {
         arity(2, 3);
         const cond = arg(0);
-        const then = arg(1);
-        const otherwise = args.length === 3 ? arg(2) : emit({ kind: "const", value: 0 });
-        return emit({ kind: "select", cond, then, otherwise });
+        const then = arg(1, true);
+        const otherwise = args.length === 3 ? arg(2, true) : emit({ kind: "const", value: 0 });
+        const granularity = sameType([then, otherwise], "IF's results");
+        return typed(emit({ kind: "select", cond, then, otherwise }), granularity);
       }
       default:
         throw new CompileError(`Unknown function ${name}`, "#NAME?");
@@ -850,7 +1260,10 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     const { address } = splitCellKey(key);
     cellStreams = { base: streamBase(sheets[sheetIndex]?.name ?? "", address), next: 0 };
     try {
-      cells.set(key, emitExpr(expr, sheetIndex));
+      const reg = emitExpr(expr, sheetIndex);
+      cells.set(key, reg);
+      const granularity = periodOf.get(reg);
+      if (granularity) cellPeriods.set(key, granularity);
     } catch (error) {
       // Drop any operations the failed cell emitted.
       ops.length = mark;
@@ -866,6 +1279,7 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     errors: new Map(),
     roots: new Set(),
     labels: new Set(),
+    periods: new Map(),
   }));
   const outcome = (key: string) => {
     const { sheetIndex, address } = splitCellKey(key);
@@ -883,6 +1297,10 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
     const { sheet, address } = outcome(key);
     sheet?.labels.add(address);
   }
+  for (const [key, granularity] of cellPeriods) {
+    const { sheet, address } = outcome(key);
+    sheet?.periods.set(address, granularity);
+  }
 
   return { program: { ops, cells, streamCount }, sheets: outcomes };
 }
@@ -894,7 +1312,12 @@ export function compileWorkbook(sheets: readonly SheetInput[]): WorkbookCompilat
 export function compileSheet(inputs: CellInputs): SheetCompilation {
   const { program, sheets } = compileWorkbook([{ name: "Sheet1", cells: inputs }]);
   const cells = new Map([...program.cells].map(([key, reg]) => [splitCellKey(key).address, reg]));
-  const outcome = sheets[0] ?? { errors: new Map(), roots: new Set(), labels: new Set() };
+  const outcome = sheets[0] ?? {
+    errors: new Map(),
+    roots: new Set(),
+    labels: new Set(),
+    periods: new Map(),
+  };
   return { program: { ...program, cells }, ...outcome };
 }
 

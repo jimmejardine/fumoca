@@ -38,15 +38,36 @@ describe("series lookup syntax", () => {
   it.each([
     [
       "=Prices[Close]@2026-10",
-      { sheet: "Prices", column: "Close", when: { kind: "period", text: "2026-10" } },
+      { sheet: "Prices", column: "Close", when: { type: "period", text: "2026-10" } },
     ],
-    ["=Prices@2026-Q1", { sheet: "Prices", when: { kind: "period", text: "2026-Q1" } }],
-    ["=Prices[Open]@A1", { sheet: "Prices", column: "Open", when: { kind: "ref", address: "A1" } }],
+    ["=Prices@2026-Q1", { sheet: "Prices", when: { type: "period", text: "2026-Q1" } }],
+    ["=Prices[Open]@A1", { sheet: "Prices", column: "Open", when: { type: "ref", address: "A1" } }],
     [
       "='Interest Rates'[Base Rate]@2027",
-      { sheet: "Interest Rates", column: "Base Rate", when: { kind: "period", text: "2027" } },
+      { sheet: "Interest Rates", column: "Base Rate", when: { type: "period", text: "2027" } },
     ],
-    ["=Prices@2026-01-15T09", { sheet: "Prices", when: { kind: "period", text: "2026-01-15T09" } }],
+    ["=Prices@2026-01-15T09", { sheet: "Prices", when: { type: "period", text: "2026-01-15T09" } }],
+    ["=Prices@Launch", { sheet: "Prices", when: { type: "name", name: "Launch" } }],
+    [
+      "=Prices@(A1 + 1)",
+      {
+        sheet: "Prices",
+        when: {
+          type: "binary",
+          operator: "+",
+          left: { type: "ref", address: "A1" },
+          right: { type: "number", value: 1 },
+        },
+      },
+    ],
+    [
+      "=Prices@2026-01:2026-03",
+      {
+        sheet: "Prices",
+        when: { type: "period", text: "2026-01" },
+        until: { type: "period", text: "2026-03" },
+      },
+    ],
   ])("parses %s", (formula, lookup) => {
     expect(parseFormula(formula)).toEqual({ type: "lookup", ...lookup });
   });
@@ -63,7 +84,8 @@ describe("series lookup syntax", () => {
   it("rejects incomplete lookups", () => {
     expect(() => parseFormula("=Prices[Close]")).toThrow(/Expected '@'/);
     expect(() => parseFormula("=Prices@")).toThrow(/Expected a period/);
-    expect(() => parseFormula("=Prices@Sales")).toThrow(/Expected a period/);
+    expect(() => parseFormula("=Prices@2026-01:")).toThrow(/Expected a period/);
+    expect(() => parseFormula("=Prices@2026-01:A1")).toThrow(/needs a period after/);
   });
 });
 
@@ -83,8 +105,9 @@ describe("series lookups", () => {
   });
 
   it("take the period from a cell", () => {
+    // A1 holds a month: its value is the month's index (2026 × 12 + 1).
     expect(evaluate({ A1: "2026-02", B1: "=Prices[Close]@A1 + 1" })).toEqual({
-      A1: undefined,
+      A1: 2026 * 12 + 1,
       B1: 102 * 1.05 + 1,
     });
   });
@@ -105,19 +128,16 @@ describe("series lookups", () => {
     expect(new Set(values).size).toBeGreaterThan(1000);
   });
 
-  it("report #N/A for missing periods, missing values and other granularities", () => {
+  it("report #N/A for periods outside the series, and carry levels over empty entries", () => {
     expect(
       evaluate({
         A1: "=Prices[Close]@2027-01",
-        A2: "=Prices[Close]@2026-03",
-        A3: "=Prices[Close]@2026-Q1",
-        A4: "=A1 + 1",
+        A2: "=Prices[Close]@2026-03", // empty: a level carries February's value forward
+        A3: "=A1 + 1",
       }),
-    ).toEqual({ A1: "#N/A", A2: "#N/A", A3: "#N/A", A4: "#N/A" });
-    const { sheets } = compileWorkbook([prices, { name: "M", cells: { A1: "=Prices@2026-Q1" } }]);
-    expect(sheets[1]?.errors.get("A1")?.message).toBe(
-      "Prices holds a month per row, but 2026-Q1 is a quarter",
-    );
+    ).toEqual({ A1: "#N/A", A2: 102 * 1.05, A3: "#N/A" });
+    const { sheets } = compileWorkbook([prices, { name: "M", cells: { A1: "=Prices@2027-01" } }]);
+    expect(sheets[1]?.errors.get("A1")?.message).toBe("Prices has no row for 2027-01");
   });
 
   it("report #REF! for unknown sheets, columns, and sheets that aren't series", () => {

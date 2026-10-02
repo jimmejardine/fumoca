@@ -13,9 +13,12 @@ The model's logic is ARK's, restructured for fumoca:
   standard-normal cells, as in SPECS.md §6.2.1.
 - "Valuation ASP Tables" becomes "Price tables", keeping only the tables the model uses.
 - NUMBERVALUE(LEFT(year, 4)) becomes INT(year): fumoca has no text functions yet.
-- The robotaxi launch is drawn as years after 2025 (RobotaxiLaunchDelay), and ARK's formulas on
-  the launch year are rewritten in terms of it. The arithmetic is the same, but single precision
-  (the GPU) can't resolve the fraction of a year near 2026, which ARK's adoption curve steps on.
+- The robotaxi launch is a month (RobotaxiLaunch, a period), in place of ARK's fractional year
+  (2026.44). ARK's formulas on the launch year are rewritten in terms of LaunchYear =
+  YEAR(RobotaxiLaunch) and LaunchFraction = (MONTH(RobotaxiLaunch) − 1)/12. That also keeps the
+  arithmetic small, which single precision (the GPU) needs near 2026.
+- ARK's hard-coded history (2019–2024) moves to a yearly series sheet, "Actuals", one named
+  column per line, and the model looks it up: =Actuals[Cars sold]@B$1.
 
 It also writes ARK's saved run (its draws and every model value) as a snapshot, which the tests
 use to check that the restructured model computes exactly what ARK's does.
@@ -103,6 +106,46 @@ SECTIONS = [
 ]
 # Sheets whose first ARK row isn't a header with the years get one added above.
 HEADERLESS = {"Capital"}
+
+# ARK's hard-coded history (2019–2024), by model row: the series column each goes to on the
+# "Actuals" sheet. Values written as arithmetic, such as (27236-1580)*10^6, keep it.
+ACTUALS = {
+    66: "Cars produced",
+    67: "Cars sold",
+    69: "Cumulative cars sold",
+    73: "EV revenue",
+    77: "Capex per vehicle",
+    80: "EV gross profit",
+    81: "SG&A",
+    82: "SG&A share",
+    83: "R&D",
+    84: "R&D share",
+    88: "Gross PP&E",
+    91: "Accumulated depreciation",
+    92: "Depreciation",
+    93: "Net PP&E",
+    95: "Depreciation rate",
+    97: "Working capital",
+    98: "Long-term debt",
+    100: "Cash",
+    103: "Bitcoin value",
+    106: "Insured share",
+    157: "Storage deployed (MWh)",
+    158: "Storage revenue per kWh",
+    161: "Storage gross profit",
+    163: "Storage capex per MWh",
+    165: "Labor hours per car",
+    177: "Total revenue",
+    178: "Total EBIT",
+    179: "Total EBITDA",
+    181: "Interest paid",
+    185: "Total gross margin",
+    196: "Enterprise value",
+    197: "Market cap",
+    198: "Shares outstanding",
+    199: "Stock price",
+}
+ACTUAL_YEARS = "BCDEFG"  # 2019–2024
 
 # ARK's valuation dates (O203, O204) move to the Valuation sheet.
 DATES = {"O203": ("Valuation", "B29"), "O204": ("Valuation", "B30")}
@@ -235,11 +278,11 @@ TOKEN = re.compile(
 CELL = r"\$?[A-Z]{1,3}\$?\d+"
 # ARK's formulas on the launch year, in terms of years after the base year instead.
 LAUNCH_REWRITES = [
-    (r"RobotaxiLaunchYear-INT\(RobotaxiLaunchYear\)", "RobotaxiLaunchDelay-INT(RobotaxiLaunchDelay)"),
-    (r"INT\(RobotaxiLaunchYear\)", "(LaunchBaseYear+INT(RobotaxiLaunchDelay))"),
-    (rf"RobotaxiLaunchYear-({CELL})", r"RobotaxiLaunchDelay-(\1-LaunchBaseYear)"),
-    (rf"({CELL})-RobotaxiLaunchYear", r"(\1-LaunchBaseYear)-RobotaxiLaunchDelay"),
-    (rf"RobotaxiLaunchYear>({CELL})", r"RobotaxiLaunchDelay>\1-LaunchBaseYear"),
+    (r"RobotaxiLaunchYear-INT\(RobotaxiLaunchYear\)", "LaunchFraction"),
+    (r"INT\(RobotaxiLaunchYear\)", "LaunchYear"),
+    (rf"RobotaxiLaunchYear-({CELL})", r"(LaunchYear-\1+LaunchFraction)"),
+    (rf"({CELL})-RobotaxiLaunchYear", r"(\1-LaunchYear-LaunchFraction)"),
+    (rf"RobotaxiLaunchYear>({CELL})", r"(LaunchYear-\1+LaunchFraction>0)"),
 ]
 
 
@@ -338,7 +381,12 @@ def build(path):
             model_inputs_row[row] = rows.pop()
     t = Translator(model, model_inputs_row)
 
-    sheets = {name: {} for name in ["Inputs", "Price tables"] + [s for s, _, _ in SECTIONS]}
+    sheets = {
+        name: {} for name in ["Inputs", "Actuals", "Price tables"] + [s for s, _, _ in SECTIONS]
+    }
+    actual_columns = list(ACTUALS.values())
+    for i, col in enumerate(ACTUAL_YEARS):
+        sheets["Actuals"][f"A{i + 1}"] = int(model[f"{col}10"][0])
     names = {name: {} for name in sheets}
 
     # Inputs: ARK's ranges, and a draw from each. ARK's inputs-sheet row q goes to row q − 6.
@@ -351,7 +399,7 @@ def build(path):
     )
     for col, label in zip("ABCDEFGHIJK", [
         "Input", "Minimum", "Downside", "Upside", "Maximum", "Draw",
-        "Correlated z", "Correlation", "Notes (ARK)", "Base year", "Launch year",
+        "Correlated z", "Correlation", "Notes (ARK)", "Launch year", "Into the year",
     ]):
         cells[f"{col}4"] = label
     for q in range(11, 65):
@@ -369,16 +417,14 @@ def build(path):
         if q in (13, 15):
             normal = f"{mean} + {sd}*{at('G', q)}"
         if q == 15:
-            # Drawn as years after the base year, then rounded to 2 decimals as ARK does.
-            base = at("J", q)
-            lo, hi, normal = f"{lo}-{base}", f"{hi}-{base}", f"{mean}-{base} + {sd}*{at('G', q)}"
-            draw = f"IF({down}={up}, {down}-{base}, MAX({lo}, MIN({hi}, {normal})))"
-            cells[at("F", q)] = f"=ROUND({draw}, 2)"
-            cells[base] = 2025
-            names["Inputs"]["LaunchBaseYear"] = base
-            cells[at("K", q)] = f"={base} + {at('F', q)}"
-            names["Inputs"]["RobotaxiLaunchYear"] = at("K", q)
-            names["Inputs"]["RobotaxiLaunchDelay"] = at("F", q)
+            # A month: ARK's years (clamped normal) counted in whole months from January 2025.
+            years = f"IF({down}={up}, {down}, MAX({lo}, MIN({hi}, {normal})))"
+            cells[at("F", q)] = f"=PERIOD.MONTH(2025, 1) + ROUND(12*({years} - 2025), 0)"
+            names["Inputs"]["RobotaxiLaunch"] = at("F", q)
+            cells[at("J", q)] = f"=YEAR({at('F', q)})"
+            names["Inputs"]["LaunchYear"] = at("J", q)
+            cells[at("K", q)] = f"=(MONTH({at('F', q)}) - 1)/12"
+            names["Inputs"]["LaunchFraction"] = at("K", q)
         else:
             draw = f"IF({down}={up}, {down}, MAX({lo}, MIN({hi}, {normal})))"
             cells[at("F", q)] = f"={draw}"
@@ -421,6 +467,17 @@ def build(path):
             continue
         sheet, c, r = target
         out = f"{c}{r}"
+        # History moves to Tesla actuals: a number, or arithmetic on numbers only.
+        if row in ACTUALS and col in ACTUAL_YEARS and (
+            (formula is None and isinstance(value, float))
+            or (formula and not re.search(r"[A-Z]+\$?\d", formula))
+        ):
+            series_col = col_letters(2 + actual_columns.index(ACTUALS[row]))
+            series_row = ACTUAL_YEARS.index(col) + 1
+            sheets["Actuals"][f"{series_col}{series_row}"] = f"={formula}" if formula else value
+            sheets[sheet][out] = f"=Actuals[{ACTUALS[row]}]@{c}$1"
+            snapshot[f"{sheet}!{out}"] = value
+            continue
         if formula:
             sheets[sheet][out] = t.formula(formula, sheet, MODEL_SHEET)
         elif value not in (None, ""):
@@ -442,13 +499,19 @@ def build(path):
         names[sheet][name] = f"{c}{r}"
 
     draws = {INPUT_NAMES[q]: model[f"L{r}"][0] for r, q in model_inputs_row.items()}
-    draws["RobotaxiLaunchDelay"] = draws.pop("RobotaxiLaunchYear") - 2025
+    # ARK's launch, 2026.44, as the year and how far into it: the cells the model reads.
+    launch = draws.pop("RobotaxiLaunchYear")
+    draws["LaunchYear"] = float(int(launch))
+    draws["LaunchFraction"] = launch - int(launch)
     return sheets, names, draws, snapshot
 
 
 def write(sheets, names, draws, snapshot):
     order = ["Inputs", "EV", "Capital", "Insurance", "Ride-hail", "Storage", "Optimus",
-             "Valuation", "Price tables"]
+             "Valuation", "Actuals", "Price tables"]
+    series = {
+        "Actuals": {"granularity": "year", "type": "level", "columns": list(ACTUALS.values())}
+    }
     lines = [
         "// Generated by scripts/ark-tesla/generate.py from ARK Invest's Tesla 2029 valuation model",
         "// (https://github.com/ARKInvest/ARK-Invest-Tesla-Valuation-Model). Do not edit by hand.",
@@ -458,8 +521,13 @@ def write(sheets, names, draws, snapshot):
         "  name: string;",
         "  cells: Record<string, number | string>;",
         "  names: Record<string, string>;",
+        "  series?: { granularity: \"year\"; type: \"level\"; columns: string[] };",
         "}[] = " + json.dumps(
-            [{"name": n, "cells": sheets[n], "names": names[n]} for n in order], indent=2,
+            [
+                {"name": n, "cells": sheets[n], "names": names[n], **({"series": series[n]} if n in series else {})}
+                for n in order
+            ],
+            indent=2,
             ensure_ascii=False,
         ) + ";",
         "",

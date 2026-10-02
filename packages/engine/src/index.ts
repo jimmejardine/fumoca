@@ -36,19 +36,20 @@ export {
   formatReference,
   formulaNames,
   formulaReferences,
-  type LookupTime,
   nameError,
   parseFormula,
   renameInFormula,
   shiftFormula,
 } from "./parser";
 export {
+  formatPeriod,
   GRANULARITIES,
   type Granularity,
   granularityOf,
   nextPeriod,
   normalizePeriod,
   periodContaining,
+  periodValue,
 } from "./periods";
 export { hash32, randomU32, standardNormal, toUnit, uniformUnit } from "./random";
 export { normalCdf, normalPdf } from "./special";
