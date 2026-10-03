@@ -43,10 +43,12 @@ const ABOUT: Record<string, string> = {
   A10: "EV, Capital, Insurance, Ride-hail, Storage, Optimus: the business lines, by year.",
   A13: "Actuals: the reported history (2019–2024), a yearly series the model looks up.",
   A11: "Valuation: consolidated results, enterprise value, and the 2029 share price.",
-  A12: "Price tables: vehicle prices by volume, ride-hail prices by miles, robotaxi adoption.",
-  A14: "Scenarios and Sensitivities, in the side panel, vary the key drivers.",
-  A16: "ARK's disclosure: this is for informational purposes only and is not investment advice.",
-  A17: "Forecasts are inherently limited and cannot be relied on.",
+  A12: "Price tables: vehicle prices by volume, ride-hail prices by miles, the adoption curve.",
+  A14: "Robotaxi adoption: the robotaxi share of ride-hail, year by year, a series the model",
+  A15: "looks up. It follows the launch month and ARK's S-curve.",
+  A16: "Scenarios and Sensitivities, in the side panel, vary the key drivers.",
+  A18: "ARK's disclosure: this is for informational purposes only and is not investment advice.",
+  A19: "Forecasts are inherently limited and cannot be relied on.",
 };
 
 /** A named cell's location: names are unique across the workbook. */

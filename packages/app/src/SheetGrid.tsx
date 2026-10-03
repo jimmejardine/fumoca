@@ -1,4 +1,4 @@
-import { columnLetters, formatReference, granularityOf } from "@fumoca/engine";
+import { addressPosition, columnLetters, formatReference, granularityOf } from "@fumoca/engine";
 import { cellName, lastUsedRow, PERIOD_COLUMN, type Sheet, suggestPeriod } from "@fumoca/storage";
 import { useComputedColorScheme } from "@mantine/core";
 import {
@@ -49,7 +49,16 @@ interface CellMeta {
   message?: string;
   /** CSS background image: the cell's histogram, for uncertain cells. */
   background?: string;
+  /** For text that spills into the empty cells to its right: the width it may take, in pixels. */
+  spill?: number;
 }
+
+/** Empty cells that spilling text covers: the last one keeps its right-hand grid line. */
+type Covered = "covered" | "coveredEnd";
+const coveredKey = (prop: string) => `${prop}~covered`;
+
+/** Horizontal padding of grid cells, set in SheetGrid.module.css. */
+const CELL_PADDING = 4;
 
 /** Histogram fill colours: faint, so the text on top stays readable in both themes. */
 export const HISTOGRAM_COLORS = {
@@ -105,23 +114,32 @@ export interface CellEdit {
 
 const addressOf = (prop: unknown, row: Row) => `${String(prop)}${row[ROW_KEY] + 1}`;
 
-/** Parses an address like "B7" into grid coordinates. */
+/** Parses an address like "B7" (or "AB7", on wide series sheets) into grid coordinates. */
 export function cellPosition(address: string): { x: number; y: number } | null {
-  const match = /^([A-Z])([0-9]+)$/.exec(address);
-  if (!match?.[1] || !match[2]) return null;
-  return { x: match[1].charCodeAt(0) - 65, y: Number(match[2]) - 1 };
+  if (!/^[A-Z]+[0-9]+$/.test(address)) return null;
+  const { column, row } = addressPosition(address);
+  return { x: column - 1, y: row - 1 };
 }
 
 function cellProperties({ model, prop }: CellTemplateProp) {
   const meta = model[metaKey(String(prop))] as CellMeta | undefined;
+  const covered = model[coveredKey(String(prop))] as Covered | undefined;
   const invalidRow = model[INVALID_KEY] === true;
   // The cell's address, so dependency borders find it whatever rows a filter hides.
   const address = { "data-address": addressOf(prop, model as Row) };
-  if (!meta) return invalidRow ? { ...address, class: classes.invalidRow ?? "" } : address;
+  if (!meta) {
+    const names = [
+      invalidRow ? classes.invalidRow : undefined,
+      covered ? classes[covered] : undefined,
+    ];
+    const name = names.filter(Boolean).join(" ");
+    return name ? { ...address, class: name } : address;
+  }
   const names = [
     classes[meta.kind],
     meta.root ? classes.root : undefined,
     invalidRow ? classes.invalidRow : undefined,
+    meta.spill ? classes.spill : undefined,
   ].filter(Boolean);
   return {
     ...address,
@@ -139,12 +157,31 @@ function cellProperties({ model, prop }: CellTemplateProp) {
   };
 }
 
+/**
+ * A cell's content: its text, or for text that spills into empty cells to its right (as in
+ * Excel), a span as wide as the space it may take, clipped there.
+ */
+function cellTemplate(
+  h: (tag: string, props: Record<string, unknown>, text: string) => unknown,
+  { model, prop }: CellTemplateProp,
+) {
+  const meta = model[metaKey(String(prop))] as CellMeta | undefined;
+  const text = String(model[prop as string] ?? "");
+  if (!meta?.spill) return text;
+  return h(
+    "span",
+    { class: classes.spillText, style: { width: `${meta.spill - 2 * CELL_PADDING}px` } },
+    text,
+  );
+}
+
 const column = (letter: string, name: string, size = 120) => ({
   prop: letter,
   name,
   size,
   editor: "formula",
   cellProperties,
+  cellTemplate,
 });
 
 /** Standard sheets: columns A–Z. */
@@ -486,6 +523,28 @@ export function SheetGrid({
         row[prop] = formatCellInput(value);
       }
     }
+    // Text spills into the empty cells to its right, up to the first with contents (as in Excel).
+    for (const row of rows) {
+      columns.forEach((column, x) => {
+        const prop = String(column.prop);
+        const meta = row[metaKey(prop)] as CellMeta | undefined;
+        if (meta?.kind !== "text" || row[rawKey(prop)] === undefined) return;
+        let width = column.size ?? 0;
+        let end = x;
+        for (let next = x + 1; next < columns.length; next++) {
+          const neighbour = String(columns[next]?.prop);
+          if (row[rawKey(neighbour)] !== undefined) break;
+          width += columns[next]?.size ?? 0;
+          end = next;
+        }
+        if (end === x) return;
+        row[metaKey(prop)] = { ...meta, spill: width };
+        for (let covered = x + 1; covered <= end; covered++) {
+          row[coveredKey(String(columns[covered]?.prop))] =
+            covered === end ? "coveredEnd" : "covered";
+        }
+      });
+    }
     // Series sheets: every row with content needs a time value of the sheet's granularity
     // in column A (SPECS.md §5.2). Rows where it's missing or wrong show red.
     if (granularity) {
@@ -500,7 +559,7 @@ export function SheetGrid({
       }
     }
     return rows;
-  }, [sheet.cells, granularity, results, colorScheme]);
+  }, [sheet.cells, granularity, results, colorScheme, columns]);
 
   const commit = (edits: CellEdit[]) => {
     const error = onCommit(edits);

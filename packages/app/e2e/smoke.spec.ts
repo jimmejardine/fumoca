@@ -245,6 +245,34 @@ test("periods are values: typed, calculated with, and shown as periods", async (
   await expect(cell(page, 0, 4)).toHaveText("2026");
 });
 
+test("long text spills into empty cells to its right, as in Excel", async ({ page }) => {
+  const label = "A label far too long to fit in one column";
+  await editCell(page, 0, 0, label); // A1
+  // The spilling text's width, or 0 while the cell holds its text plainly.
+  const textWidth = async () => {
+    const span = cell(page, 0, 0).locator("span");
+    if ((await span.count()) === 0) return 0;
+    return span.evaluate((element) => element.getBoundingClientRect().width);
+  };
+  const cellWidth = await cell(page, 0, 0).evaluate((c) => c.getBoundingClientRect().width);
+  // B1 and on are empty: the text has the whole row to spill into.
+  await expect.poll(textWidth).toBeGreaterThan(cellWidth * 2);
+
+  // Clicking a cell under the text selects that cell, not the one the text belongs to.
+  await cell(page, 0, 2).click();
+  await expect(page.getByLabel("Cell address")).toHaveAttribute("data-address", "C1");
+
+  // A value in C1 stops it there: it spills over B1 only.
+  await editCell(page, 0, 2, "5");
+  await expect.poll(textWidth).toBeLessThan(cellWidth * 2);
+  await expect.poll(textWidth).toBeGreaterThan(cellWidth);
+
+  // A value in B1 stops it at its own cell, as an ordinary cell.
+  await editCell(page, 0, 1, "7");
+  await expect.poll(textWidth).toBe(0);
+  await expect(cell(page, 0, 0)).toHaveText(label);
+});
+
 test("the formula bar shows and edits the selected cell", async ({ page }) => {
   await page.getByRole("button", { name: "Test model" }).click();
   await tabs(page).filter({ hasText: "Deterministic" }).click();

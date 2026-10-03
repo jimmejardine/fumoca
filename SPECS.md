@@ -1250,6 +1250,11 @@ fumoca's purpose is to make Monte Carlo valuation models like [ARK Invest's Tesl
   - **History:** ARK's hard-coded history (2019–2024) is on **Actuals**, a yearly series sheet with one named column per line: cars sold, EV revenue, SG&A, PP&E, shares, stock price, and so on.
     - The model looks it up: `=Actuals[Cars sold]@B$1`, where row 1 holds the years, and a yearly sheet accepts a plain number as a year.
     - ARK's source arithmetic, such as `(27236-1580)*10^6`, stays as the series cell's formula.
+  - **Robotaxi adoption:** ARK's table of penetration by years since launch (`VLOOKUP` into the price tables) becomes **Robotaxi adoption**, a yearly series sheet from 2024 to 2040.
+    - **Columns:** *Penetration* applies ARK's launch-year rules and S-curve to each calendar year: 0 before the launch, the first year's share scaled by the part of the launch year left, then the curve. *Years since launch* is beside it.
+    - The ride-hail sheet looks it up by year: `='Robotaxi adoption'@G$1`.
+    - The curve's inputs stay on **Price tables**, named `AdoptionSaturation` and `FastGrowthStart`, with `TakeoverTime`.
+    - Every year's penetration is a distribution, shown with its histogram. The generator checks that ARK's formula is the one the series reproduces.
   - **Text cells:** references to text cells become 0. ARK reaches them only in `IF` branches that are never taken.
   - **Text functions:** `NUMBERVALUE(LEFT(year, 4))` becomes `INT(year)`.
 - **Checked against ARK** (`teslaModel.test.ts`):

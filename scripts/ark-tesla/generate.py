@@ -12,6 +12,9 @@ The model's logic is ARK's, restructured for fumoca:
 - The robotaxi launch year and the production constraint are correlated through two visible
   standard-normal cells, as in SPECS.md §6.2.1.
 - "Valuation ASP Tables" becomes "Price tables", keeping only the tables the model uses.
+- ARK's robotaxi adoption table (penetration by years since launch, looked up by the ride-hail
+  sheet) becomes a yearly series sheet, "Robotaxi adoption": the penetration in each calendar
+  year, with ARK's launch-year rules, which the ride-hail sheet looks up by year.
 - NUMBERVALUE(LEFT(year, 4)) becomes INT(year): fumoca has no text functions yet.
 - The robotaxi launch is a month (RobotaxiLaunch, a period), in place of ARK's fractional year
   (2026.44). ARK's formulas on the launch year are rewritten in terms of LaunchYear =
@@ -260,9 +263,62 @@ def asp_target(col, row):
     """ARK price-table cell → (column letters, row) on "Price tables", or None if unused."""
     if 17 <= row <= 37 and col_num(col) <= 7:
         return col, row - 16
+    # The adoption curve's inputs and table. The table (rows 47 on) isn't written out: it becomes
+    # the "Robotaxi adoption" series (see ADOPTION_TABLE).
     if 40 <= row <= 63 and col in ("D", "E"):
         return col_letters(col_num(col) - 3), row - 17
     return None
+
+
+# ARK's adoption table: price-table rows from here on aren't written to "Price tables".
+ADOPTION_TABLE = 47
+
+
+# ----------------------------------------------------------------------------------------------
+# Robotaxi adoption: ARK's table of penetration by years since launch, as a yearly series
+
+ADOPTION = "Robotaxi adoption"
+ADOPTION_YEARS = range(2024, 2041)
+ADOPTION_COLUMNS = ["Penetration", "Years since launch"]
+# The table's rows: years since launch 0 to 15. A lookup past the last row gets the last row.
+ADOPTION_LAST = 15
+
+
+def adoption_curve(k):
+    """ARK's S-curve: penetration (a fraction) k years after the launch."""
+    return (
+        f"AdoptionSaturation/(1+POWER(81,(FastGrowthStart+TakeoverTime/2-{k})/TakeoverTime))"
+        "*(1/100)"
+    )
+
+
+def ark_adoption(year_cell):
+    """ARK's ride-hail penetration formula (after translation), for a year in `year_cell`."""
+    table = "'Price tables'!$A$31:$B$46"
+    years = f"ABS(ROUND(({year_cell}-LaunchYear-LaunchFraction),0))"
+    return (
+        f"=IF(((LaunchYear-{year_cell}+LaunchFraction))>=1,0,IF(LaunchYear={year_cell},"
+        f"VLOOKUP(0,{table},2,TRUE)*(1-(LaunchFraction)/1),"
+        f"VLOOKUP(IF((LaunchFraction)>0.5,{years}+1,{years}),{table},2,TRUE)))"
+    )
+
+
+def adoption_rows():
+    """The series' cells: each year, its penetration, and its years since launch."""
+    cells = {}
+    for r, year in enumerate(ADOPTION_YEARS, start=1):
+        years = f"ABS(ROUND((A{r}-LaunchYear-LaunchFraction),0))"
+        cells[f"A{r}"] = year
+        cells[f"B{r}"] = (
+            f"=IF(((LaunchYear-A{r}+LaunchFraction))>=1,0,IF(LaunchYear=A{r},"
+            f"{adoption_curve(0)}*(1-(LaunchFraction)/1),"
+            f"{adoption_curve(f'MIN(C{r},{ADOPTION_LAST})')}))"
+        )
+        cells[f"C{r}"] = (
+            f"=IF(((LaunchYear-A{r}+LaunchFraction))>=1,0,"
+            f"IF((LaunchFraction)>0.5,{years}+1,{years}))"
+        )
+    return cells
 
 
 def quote(sheet):
@@ -382,7 +438,8 @@ def build(path):
     t = Translator(model, model_inputs_row)
 
     sheets = {
-        name: {} for name in ["Inputs", "Actuals", "Price tables"] + [s for s, _, _ in SECTIONS]
+        name: {}
+        for name in ["Inputs", "Actuals", "Price tables", ADOPTION] + [s for s, _, _ in SECTIONS]
     }
     actual_columns = list(ACTUALS.values())
     for i, col in enumerate(ACTUAL_YEARS):
@@ -443,7 +500,7 @@ def build(path):
     for addr, (value, formula) in asp.items():
         col, row = split(addr)
         target = asp_target(col, row)
-        if not target or value in (None, "") and not formula:
+        if not target or row >= ADOPTION_TABLE or value in (None, "") and not formula:
             continue
         out = f"{target[0]}{target[1]}"
         sheets["Price tables"][out] = (
@@ -491,6 +548,18 @@ def build(path):
         sheets[name]["A1"] = name
     for addr, (sheet, out) in DATES.items():
         sheets[sheet][out] = model[addr][0]
+    # Robotaxi adoption: the ride-hail sheet's penetration row looks the series up by year, in
+    # place of ARK's table lookup. Check the row is the formula the series reproduces.
+    sheets[ADOPTION] = adoption_rows()
+    ride_hail = sheets["Ride-hail"]
+    for c in "GHIJKL":
+        assert ride_hail[f"{c}13"] == ark_adoption(f"{c}1"), ride_hail[f"{c}13"]
+        ride_hail[f"{c}13"] = f"='{ADOPTION}'@{c}$1"
+    names["Price tables"]["AdoptionSaturation"] = "B26"
+    names["Price tables"]["FastGrowthStart"] = "B27"
+    sheets["Price tables"]["A30"] = (
+        f"The penetration in each year, from this curve, is on the \"{ADOPTION}\" series sheet."
+    )
     sheets["Valuation"]["A29"] = "Price date (ARK's publication, Excel date)"
     sheets["Valuation"]["A30"] = "Target date (end of 2029)"
     for addr, name in OUTPUT_NAMES.items():
@@ -508,9 +577,10 @@ def build(path):
 
 def write(sheets, names, draws, snapshot):
     order = ["Inputs", "EV", "Capital", "Insurance", "Ride-hail", "Storage", "Optimus",
-             "Valuation", "Actuals", "Price tables"]
+             "Valuation", "Actuals", "Price tables", ADOPTION]
     series = {
-        "Actuals": {"granularity": "year", "type": "level", "columns": list(ACTUALS.values())}
+        "Actuals": {"granularity": "year", "type": "level", "columns": list(ACTUALS.values())},
+        ADOPTION: {"granularity": "year", "type": "level", "columns": ADOPTION_COLUMNS},
     }
     lines = [
         "// Generated by scripts/ark-tesla/generate.py from ARK Invest's Tesla 2029 valuation model",

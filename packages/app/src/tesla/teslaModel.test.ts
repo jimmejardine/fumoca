@@ -78,6 +78,24 @@ describe("the Tesla model", () => {
     expect(Math.abs(quartile(0.75) / 3149 - 1)).toBeLessThan(0.05);
   });
 
+  it("keeps robotaxi adoption in a yearly series sheet, which the ride-hail sheet looks up", () => {
+    const workbook = createTeslaWorkbook();
+    const adoption = workbook.sheets.find((s) => s.name === "Robotaxi adoption");
+    expect(adoption?.series).toEqual({
+      granularity: "year",
+      type: "level",
+      columns: ["Penetration", "Years since launch"],
+    });
+    expect(adoption?.cells.A1).toBe(2024);
+    expect(adoption?.cells.A17).toBe(2040);
+    const rideHail = workbook.sheets.find((s) => s.name === "Ride-hail");
+    expect(rideHail?.cells.L13).toBe("='Robotaxi adoption'@L$1");
+    // ARK's lookup table is gone from the price tables; the curve's inputs stay, named.
+    const prices = workbook.sheets.find((s) => s.name === "Price tables");
+    expect(prices?.cells.B31).toBeUndefined();
+    expect(prices?.names).toEqual({ AdoptionSaturation: "B26", FastGrowthStart: "B27" });
+  });
+
   it("has a scenario and a sensitivity analysis over its named cells", () => {
     const workbook = createTeslaWorkbook();
     const scenarios = workbook.scenarios ?? [];

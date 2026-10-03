@@ -9,6 +9,34 @@
  */
 .wrapper :global(revo-grid[theme]) {
   --rg-theme-cell-vertical-border: var(--rg-theme-cell-border);
+  /* SheetGrid.tsx's CELL_PADDING, which sizes spilling text. */
+  --revo-grid-cell-padding: 0 4px;
+}
+
+/*
+ * Text that spills into empty cells to its right, as in Excel: the cell lets its content out and
+ * sits above its neighbours, and the text is clipped where the empty cells end. Under the text, the
+ * cells drop their right-hand grid lines; the last covered cell keeps its.
+ */
+/* As specific as RevoGrid's own cell rules, which hide overflow. */
+.wrapper :global(revogr-data .rgCell).spill {
+  overflow: visible;
+  z-index: 1;
+}
+
+.spillText {
+  /* Clicks go through to the cell underneath, as in Excel. */
+  pointer-events: none;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.wrapper :global(revogr-data .rgCell).spill,
+.wrapper :global(revogr-data .rgCell).covered {
+  box-shadow: none;
 }
 
 .wrapper :global(revogr-header .rgHeaderCell) {
